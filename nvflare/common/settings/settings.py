@@ -17,7 +17,7 @@ import os
 import sys
 from datetime import datetime
 from enum import Enum
-from typing import Any, NamedTuple, Dict, List, Tuple, Optional
+from typing import Any, NamedTuple, Dict, List, Tuple, Optional, Union
 
 from nvflare.common.settings import SettingsReader
 
@@ -30,15 +30,26 @@ log = logging.getLogger(__name__)
 SourceType = Enum("SourceType", "FLAT DICT")
 
 
-def canonicalize(name: str) -> str:
-    return ''.join(c.lower() for c in name if c.isalnum())
-
-
 class SettingsSource(NamedTuple):
     source_type: SourceType
     source_name: str
     modified_time: datetime
     data: Dict[str, Any]
+
+
+def canonicalize(name: str) -> str:
+    return ''.join(c.lower() for c in name if c.isalnum())
+
+
+def append_arg(value: Any, new_value: str) -> Union[str, List[str]]:
+    if not value:
+        return new_value
+
+    if type(value) is list:
+        value.append(new_value)
+        return value
+    else:
+        return [value, new_value]
 
 
 def load_environment_vars() -> SettingsSource:
@@ -55,15 +66,21 @@ def load_arguments() -> SettingsSource:
     for arg in sys.argv:
         if arg.startswith(("-", "--")):
             if last_key:
-                data[last_key] = last_value
-            last_key = canonicalize(arg)
-            last_value = None
+                data[last_key] = append_arg(data.get(last_key), last_value)
+            if "=" in arg:
+                # Handling --key=value format
+                index = arg.index("=")
+                last_key = canonicalize(arg[:index])
+                last_value = arg[index+1:]
+            else:
+                last_key = canonicalize(arg)
+                last_value = None
         else:
             if not last_value:
                 last_value = arg
 
     if last_key:
-        data[last_key] = last_value
+        data[last_key] = append_arg(data.get(last_key), last_value)
 
     return SettingsSource(SourceType.FLAT, "cmd-line", datetime.now(), data)
 
@@ -106,6 +123,32 @@ class Settings:
             log.debug(f"Parameter [{key}={value}] found in {source_name} last modified on {modified_time.isoformat()}")
 
         return value
+
+    def get_number(self, key: str, default_value: Union[int, float, None] = None) -> Union[int, float, None]:
+        """Get the settings parameter as a number given a key
+
+        Args:
+            key: The key in dot-notation
+            default_value: Default value to return if key is not found
+
+        Returns:
+            The parameter value or default value.
+        """
+        value = self.get(key, None)
+        if isinstance(value, (int, float)):
+            return value
+
+        if value:
+            try:
+                result = int(value)
+            except ValueError:
+                try:
+                    result = float(value)
+                except ValueError:
+                    log.debug(f"Can't convert {key}={value} to number")
+                    result = None
+
+        return result if result else default_value
 
     def get_detail(self, key: str, default_value: Any = None) -> Tuple[str, datetime, Any]:
         """Get the settings parameter given a key with detailed information
@@ -283,9 +326,9 @@ class FlareSettings(RuntimeSettings):
     def _set_log_level(logger_name: Optional[str], level: str) -> None:
 
         if logger_name:
-            logger = logging.getLogger()
-        else:
             logger = logging.getLogger(logger_name)
+        else:
+            logger = logging.getLogger()
 
         numeric_level = getattr(logging, level.upper(), None)
         if numeric_level:
