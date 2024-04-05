@@ -18,12 +18,14 @@ from nvflare.app_opt.xgboost.sec.dam import DamDecoder, DamEncoder
 from nvflare.app_opt.xgboost.sec.data_converter import DataConverter, AggregationContext, FeatureAggregationResult, \
     FeatureContext
 
-DATA_SET_HG_PAIRS = 1
+DATA_SET_GH_PAIRS = 1
 DATA_SET_AGGREGATION = 2
 DATA_SET_AGGREGATION_WITH_FEATURES = 3
 DATA_SET_AGGREGATION_RESULT = 4
 
 SCALE_FACTOR = 1000000.0  # Preserve 6 decimal places
+
+
 class ProcessorDataConverter(DataConverter):
 
     def __init__(self):
@@ -31,13 +33,14 @@ class ProcessorDataConverter(DataConverter):
         self.features = []
         self.feature_list = None
         self.num_samples = 0
+
     def decode_gh_pairs(self, buffer: bytes, fl_ctx: FLContext) -> List[Tuple[int, int]]:
         decoder = DamDecoder(buffer)
         if not decoder.is_valid():
             raise RuntimeError("GH Buffer is not properly encoded")
 
-        if decoder.get_data_set_id() != DATA_SET_HG_PAIRS:
-            raise RuntimeError(f"Data is not for HG Pairs: {decoder.get_data_set_id()}")
+        if decoder.get_data_set_id() != DATA_SET_GH_PAIRS:
+            raise RuntimeError(f"Data is not for GH Pairs: {decoder.get_data_set_id()}")
 
         float_array = decoder.decode_float_array()
         result = []

@@ -115,14 +115,14 @@ std::vector<double> NVFlareProcessor::HandleAggregation(xgboost::common::Span<st
     std::vector<double> result;
     auto cuts = gidx_->Cuts().Ptrs();
     auto max_slot = cuts.back();
-
+    auto array_size = 2 * max_slot * sizeof(double);
+    double *slots = static_cast<double *>(malloc(array_size));
     while (remaining > kPrefixLen) {
         DamDecoder decoder(reinterpret_cast<uint8_t *>(pointer), remaining);
         auto size = decoder.Size();
         auto node_list = decoder.DecodeIntArray();
         for (auto node : node_list) {
-            double slots[2 * max_slot];
-            memset(slots, 0, sizeof(slots));
+            memset(slots, 0, array_size);
 
             // Convert per-feature histo to a flat one
             for (auto f : features_) {
@@ -140,6 +140,7 @@ std::vector<double> NVFlareProcessor::HandleAggregation(xgboost::common::Span<st
         remaining -= size;
         pointer += size;
     }
+    free(slots);
 
     return result;
 }
