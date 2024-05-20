@@ -18,18 +18,14 @@ from nvflare.apis.event_type import EventType
 from nvflare.apis.fl_component import FLComponent
 from nvflare.apis.fl_context import FLContext
 from nvflare.apis.shareable import Shareable
-from nvflare.app_opt.xgboost.histogram_based_v2.aggr import Aggregator
+from nvflare.app_opt.xgboost.histogram_based_v2.cipher.aggr import Aggregator
+from nvflare.app_opt.xgboost.histogram_based_v2.cipher.cipher_loader import loader
 from nvflare.app_opt.xgboost.histogram_based_v2.defs import Constant
-from nvflare.app_opt.xgboost.histogram_based_v2.mock_he.adder import Adder
-from nvflare.app_opt.xgboost.histogram_based_v2.mock_he.decrypter import Decrypter
-from nvflare.app_opt.xgboost.histogram_based_v2.mock_he.encryptor import Encryptor
-from nvflare.app_opt.xgboost.histogram_based_v2.mock_he.util import (
+from nvflare.app_opt.xgboost.histogram_based_v2.cipher.adder import Adder
+from nvflare.app_opt.xgboost.histogram_based_v2.cipher.decrypter import Decrypter
+from nvflare.app_opt.xgboost.histogram_based_v2.cipher.encryptor import Encryptor
+from nvflare.app_opt.xgboost.histogram_based_v2.cipher.util import (
     combine,
-    decode_encrypted_data,
-    decode_feature_aggregations,
-    encode_encrypted_data,
-    encode_feature_aggregations,
-    generate_keys,
     split,
 )
 from nvflare.app_opt.xgboost.histogram_based_v2.sec.dam import DamDecoder
@@ -53,12 +49,10 @@ except Exception:
 
 
 class ClientSecurityHandler(SecurityHandler):
-    def __init__(self, key_length=1024, num_workers=10, tenseal_context_file="client_context.tenseal"):
+    def __init__(self, num_workers=16, cipher_name="mock", cipher_path=None,
+                 tenseal_context_file="client_context.tenseal"):
         FLComponent.__init__(self)
         self.num_workers = num_workers
-        self.key_length = key_length
-        self.public_key = None
-        self.private_key = None
         self.encryptor = None
         self.adder = None
         self.decrypter = None
@@ -67,13 +61,13 @@ class ClientSecurityHandler(SecurityHandler):
         self.clear_ghs = None  # for label client: list of tuples (g, h)
         self.original_gh_buffer = None
         self.feature_masks = None
-        self.aggregator = Aggregator()
+        self.aggregator = None
         self.aggr_result = None  # for label client: computed aggr result based on clear-text clear_ghs
+        self.cipher_name = cipher_name
+        self.cipher_path = cipher_path
+        self.cipher = None
         self.tenseal_context_file = tenseal_context_file
         self.tenseal_context = None
-
-        if tenseal_imported:
-            decomposers.register()
 
     def _process_before_broadcast(self, fl_ctx: FLContext):
         root = fl_ctx.get_prop(Constant.PARAM_KEY_ROOT)
@@ -91,6 +85,9 @@ class ClientSecurityHandler(SecurityHandler):
             self.info(fl_ctx, "no clear gh pairs - ignore")
             return
 
+        if not self.cipher:
+            return self._abort(f"Missing cipher {self.cipher_name}, vertical secure XGBoost not supported", fl_ctx)
+
         self.info(fl_ctx, f"got gh {len(clear_ghs)} pairs; original buf len: {len(buffer)}")
         self.original_gh_buffer = buffer
 
@@ -99,10 +96,7 @@ class ClientSecurityHandler(SecurityHandler):
         t = time.time()
         encrypted_values = self.encryptor.encrypt(self.clear_ghs)
         self.info(fl_ctx, f"encrypted gh pairs: {len(encrypted_values)}, took {time.time() - t} secs")
-
-        t = time.time()
-        encoded = encode_encrypted_data(self.public_key, encrypted_values)
-        self.info(fl_ctx, f"encoded msg: size={len(encoded)}, type={type(encoded)} time={time.time()-t} secs")
+        encoded = self.cipher.get_public_key_blob(), encrypted_values
 
         # Remember the original buffer size, so we could send a dummy buffer of this size to other clients
         # This is important since all XGB clients already prepared a buffer of this size and expect the data
@@ -130,10 +124,10 @@ class ClientSecurityHandler(SecurityHandler):
             return
 
         # this is a receiving non-label client
-        # the rcv_buf contains encrypted gh values
-        encoded_gh_str = fl_ctx.get_prop(Constant.PARAM_KEY_RCV_BUF)
-        self.info(fl_ctx, f"{len(encoded_gh_str)=} {type(encoded_gh_str)=}")
-        self.public_key, self.encrypted_ghs = decode_encrypted_data(encoded_gh_str)
+        # the rcv_buf contains a tuple with public_key and encrypted GHs
+        public_key_blob, self.encrypted_ghs = fl_ctx.get_prop(Constant.PARAM_KEY_RCV_BUF)
+        self.info(fl_ctx, f"{len(self.encrypted_ghs)=}")
+        self.cipher.set_public_key(public_key_blob)
 
         original_buf_size = reply.get_header(Constant.HEADER_KEY_ORIGINAL_BUF_SIZE)
         self.info(fl_ctx, f"{original_buf_size=}; encrypted gh pairs: {len(self.encrypted_ghs)}")
@@ -207,17 +201,14 @@ class ClientSecurityHandler(SecurityHandler):
         start = time.time()
         aggr_result = self.adder.add(self.encrypted_ghs, self.feature_masks, groups, encode_sum=True)
         self.info(fl_ctx, f"got aggr result for {len(aggr_result)} features in {time.time()-start} secs")
-        start = time.time()
-        encoded_str = encode_feature_aggregations(aggr_result)
-        self.info(fl_ctx, f"encoded aggr result len {len(encoded_str)} in {time.time()-start} secs")
         headers = {Constant.HEADER_KEY_ENCRYPTED_DATA: True, Constant.HEADER_KEY_ORIGINAL_BUF_SIZE: len(buffer)}
-        fl_ctx.set_prop(key=Constant.PARAM_KEY_SEND_BUF, value=encoded_str, private=True, sticky=False)
+        fl_ctx.set_prop(key=Constant.PARAM_KEY_SEND_BUF, value=aggr_result, private=True, sticky=False)
         fl_ctx.set_prop(key=Constant.PARAM_KEY_HEADERS, value=headers, private=True, sticky=False)
 
     def _process_before_all_gather_v_horizontal(self, fl_ctx: FLContext):
         if not self.tenseal_context:
             return self._abort(
-                "Horizontal secure XGBoost not supported due to missing context or missing module", fl_ctx
+                "Horizontal secure XGBoost not supported due to missing TenSEAL context or missing module", fl_ctx
             )
 
         buffer = fl_ctx.get_prop(Constant.PARAM_KEY_SEND_BUF)
@@ -259,25 +250,15 @@ class ClientSecurityHandler(SecurityHandler):
         self.info(fl_ctx, f"aggregated clear-text in {time.time()-t} secs")
         self.aggr_result = aggr_result
 
-    def _decrypt_aggr_result(self, encoded, fl_ctx: FLContext):
-        # decrypt aggr result from a client
-        if not isinstance(encoded, str):
-            # this is dummy result of the label-client
-            return encoded
-
-        encoded_str = encoded
+    def _decrypt_aggr_result(self, aggrs, fl_ctx: FLContext):
         t = time.time()
-        decoded_aggrs = decode_feature_aggregations(self.public_key, encoded_str)
-        self.info(fl_ctx, f"decode_feature_aggregations took {time.time()-t} secs")
-
-        t = time.time()
-        aggrs_to_decrypt = [decoded_aggrs[i][2] for i in range(len(decoded_aggrs))]
+        aggrs_to_decrypt = [a[2] for a in aggrs]
         decrypted_aggrs = self.decrypter.decrypt(aggrs_to_decrypt)  # this is a list of clear-text GH numbers
         self.info(fl_ctx, f"decrypted {len(aggrs_to_decrypt)} numbers in {time.time()-t} secs")
 
         aggr_result = []
-        for i in range(len(decoded_aggrs)):
-            fid, gid, _ = decoded_aggrs[i]
+        for i in range(len(aggrs)):
+            fid, gid, _ = aggrs[i]
             clear_aggr = decrypted_aggrs[i]  # list of combined clear-text ints
             aggr_result.append((fid, gid, clear_aggr))
         return aggr_result
@@ -366,13 +347,22 @@ class ClientSecurityHandler(SecurityHandler):
 
     def handle_event(self, event_type: str, fl_ctx: FLContext):
         if event_type == EventType.START_RUN:
-            self.public_key, self.private_key = generate_keys(self.key_length)
-            self.encryptor = Encryptor(self.public_key, self.num_workers)
-            self.decrypter = Decrypter(self.private_key, self.num_workers)
-            self.adder = Adder(self.num_workers)
+            if self.cipher_path:
+                loader.load(self.cipher_path)
+            self.cipher = loader.find(self.cipher_name)
+            self.cipher.initialize()
+            # This is only needed for label-client
+            self.cipher.generate_keys()
+
+            self.encryptor = Encryptor(self.cipher, self.num_workers)
+            self.decrypter = Decrypter(self.cipher, self.num_workers)
+            self.adder = Adder(self.cipher, self.num_workers)
+            self.aggregator = Aggregator(self.cipher)
+
             try:
                 if tenseal_imported:
                     self.tenseal_context = load_tenseal_context_from_workspace(self.tenseal_context_file, fl_ctx)
+                    decomposers.register()
                 else:
                     self.debug(fl_ctx, "Tenseal module not loaded, horizontal secure XGBoost is not supported")
             except Exception as ex:

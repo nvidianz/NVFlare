@@ -13,11 +13,14 @@
 # limitations under the License.
 import concurrent.futures
 
+from nvflare.app_opt.xgboost.histogram_based_v2.cipher.cipher_loader import loader
+from nvflare.app_opt.xgboost.histogram_based_v2.cipher.he_cipher import HomomorphicCipher
+
 
 class Encryptor:
-    def __init__(self, pubkey, max_workers=10):
+    def __init__(self, cipher: HomomorphicCipher, max_workers=10):
         self.max_workers = max_workers
-        self.pubkey = pubkey
+        self.cipher = cipher
         self.exe = concurrent.futures.ProcessPoolExecutor(max_workers=max_workers)
 
     def encrypt(self, numbers):
@@ -37,16 +40,12 @@ class Encryptor:
             workers_needed = 1
         else:
             workers_needed = self.max_workers
-            w_values = [None for _ in range(self.max_workers)]
-            n = int(num_values / self.max_workers)
-            w_load = [n for _ in range(self.max_workers)]
-            r = num_values % self.max_workers
-            if r > 0:
-                for i in range(r):
-                    w_load[i] += 1
+            w_values = [None] * workers_needed
+            n = int((num_values + workers_needed - 1) / workers_needed)
+            w_load = [n] * workers_needed
 
             start = 0
-            for i in range(self.max_workers):
+            for i in range(workers_needed):
                 end = start + w_load[i]
                 w_values[i] = numbers[start:end]
                 start = end
@@ -58,7 +57,7 @@ class Encryptor:
 
         items = []
         for i in range(workers_needed):
-            items.append((self.pubkey, w_values[i]))
+            items.append((self.cipher.name(), w_values[i]))
         return self._encrypt(items)
 
     def _encrypt(self, items):
@@ -70,5 +69,6 @@ class Encryptor:
 
 
 def _do_enc(item):
-    pubkey, numbers = item
-    return numbers
+    cipher_name, numbers = item
+    cipher = loader.load(cipher_name)
+    return cipher.encrypt_vector(numbers)

@@ -14,11 +14,14 @@
 
 import concurrent.futures
 
+from nvflare.app_opt.xgboost.histogram_based_v2.cipher.cipher_loader import loader
+from nvflare.app_opt.xgboost.histogram_based_v2.cipher.he_cipher import HomomorphicCipher
+
 
 class Decrypter:
-    def __init__(self, private_key, max_workers=10):
+    def __init__(self, cipher: HomomorphicCipher, max_workers=10):
         self.max_workers = max_workers
-        self.private_key = private_key
+        self.cipher = cipher
         self.exe = concurrent.futures.ProcessPoolExecutor(max_workers=max_workers)
 
     def decrypt(self, encrypted_number_groups):
@@ -32,16 +35,8 @@ class Decrypter:
 
         """
         # print(f"decrypting {len(encrypted_number_groups)} number groups")
-        items = []
-
-        for g in encrypted_number_groups:
-            items.append(
-                (
-                    self.private_key,
-                    g,
-                )
-            )
-
+        cipher_name = self.cipher.name()
+        items = [(cipher_name, g) for g in encrypted_number_groups]
         results = self.exe.map(_do_decrypt, items)
         rl = []
         for r in results:
@@ -51,5 +46,6 @@ class Decrypter:
 
 def _do_decrypt(item):
     # t = time.time()
-    private_key, numbers = item
-    return numbers
+    cipher_name, numbers = item
+    cipher = loader.load(cipher_name)
+    return cipher.decrypt_vector(numbers)

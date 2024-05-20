@@ -14,13 +14,13 @@
 
 import concurrent.futures
 
-from nvflare.app_opt.xgboost.histogram_based_v2.aggr import Aggregator
-
-from .util import encode_encrypted_numbers_to_str
+from nvflare.app_opt.xgboost.histogram_based_v2.cipher.aggr import Aggregator
+from .he_cipher import HomomorphicCipher
 
 
 class Adder:
-    def __init__(self, max_workers=10):
+    def __init__(self, cipher: HomomorphicCipher, max_workers=10):
+        self.cipher = cipher
         self.exe = concurrent.futures.ProcessPoolExecutor(max_workers=max_workers)
 
     def add(self, encrypted_numbers, features, sample_groups=None, encode_sum=True):
@@ -69,8 +69,4 @@ def _do_add(item):
         sample_ids=sample_id_list,
     )
 
-    if encode_sum:
-        sums = encode_encrypted_numbers_to_str(bins)
-    else:
-        sums = bins
-    return fid, gid, sums
+    return fid, gid, bins

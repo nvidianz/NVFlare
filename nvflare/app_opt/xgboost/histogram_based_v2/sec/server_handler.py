@@ -31,7 +31,8 @@ except Exception:
 class ServerSecurityHandler(SecurityHandler):
     def __init__(self):
         FLComponent.__init__(self)
-        self.encrypted_gh = None
+        # encoded_gh is a tuple with public key and a list of ciphertext
+        self.encoded_gh = None
         self.gh_source_rank = 0
         self.gh_seq = 0
         self.gh_original_buf_size = 0
@@ -56,11 +57,11 @@ class ServerSecurityHandler(SecurityHandler):
             self.info(fl_ctx, "not for gh broadcast - ignore")
             return
 
-        self.encrypted_gh = fl_ctx.get_prop(Constant.PARAM_KEY_SEND_BUF)
+        self.encoded_gh = fl_ctx.get_prop(Constant.PARAM_KEY_SEND_BUF)
         self.gh_source_rank = rank
         self.gh_seq = seq
         self.gh_original_buf_size = request.get_header(Constant.HEADER_KEY_ORIGINAL_BUF_SIZE)
-        self.info(fl_ctx, f"got gh bcst: encrypted_gh={len(self.encrypted_gh)} orig_buf={self.gh_original_buf_size}")
+        self.info(fl_ctx, f"got gh bcst: encoded_gh={len(self.encoded_gh[1])} orig_buf={self.gh_original_buf_size}")
         # only need to send a small dummy buffer to the server
         dummy_buf = os.urandom(Constant.DUMMY_BUFFER_SIZE)
         fl_ctx.set_prop(key=Constant.PARAM_KEY_SEND_BUF, value=dummy_buf, private=True, sticky=False)
@@ -88,8 +89,8 @@ class ServerSecurityHandler(SecurityHandler):
             return
 
         # send encrypted ghs
-        self.info(fl_ctx, f"return {len(self.encrypted_gh)=} to non-label {rank}")
-        fl_ctx.set_prop(key=Constant.PARAM_KEY_RCV_BUF, value=self.encrypted_gh, private=True, sticky=False)
+        self.info(fl_ctx, f"return {len(self.encoded_gh)=} to non-label {rank}")
+        fl_ctx.set_prop(key=Constant.PARAM_KEY_RCV_BUF, value=self.encoded_gh, private=True, sticky=False)
 
     def _process_before_all_gather_v(self, fl_ctx: FLContext):
         request = fl_ctx.get_prop(Constant.PARAM_KEY_REQUEST)
