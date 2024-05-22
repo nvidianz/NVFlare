@@ -199,7 +199,7 @@ class ClientSecurityHandler(SecurityHandler):
             fl_ctx, f"_process_before_all_gather_v: non-label client - do encrypted aggr for {len(groups)} groups"
         )
         start = time.time()
-        aggr_result = self.adder.add(self.encrypted_ghs, self.feature_masks, groups, encode_sum=True)
+        aggr_result = self.adder.add(self.encrypted_ghs, self.feature_masks, groups)
         self.info(fl_ctx, f"got aggr result for {len(aggr_result)} features in {time.time()-start} secs")
         headers = {Constant.HEADER_KEY_ENCRYPTED_DATA: True, Constant.HEADER_KEY_ORIGINAL_BUF_SIZE: len(buffer)}
         fl_ctx.set_prop(key=Constant.PARAM_KEY_SEND_BUF, value=aggr_result, private=True, sticky=False)

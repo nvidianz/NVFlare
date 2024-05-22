@@ -13,8 +13,10 @@
 # limitations under the License.
 
 import concurrent.futures
+import functools
 
 from nvflare.app_opt.xgboost.histogram_based_v2.cipher.aggr import Aggregator
+from .cipher_loader import loader
 from .he_cipher import HomomorphicCipher
 
 
@@ -23,7 +25,7 @@ class Adder:
         self.cipher = cipher
         self.exe = concurrent.futures.ProcessPoolExecutor(max_workers=max_workers)
 
-    def add(self, encrypted_numbers, features, sample_groups=None, encode_sum=True):
+    def add(self, encrypted_numbers, features, sample_groups=None):
         """
 
         Args:
@@ -44,23 +46,27 @@ class Adder:
         for f in features:
             fid, mask, num_bins = f
             if not sample_groups:
-                items.append((encode_sum, fid, encrypted_numbers, mask, num_bins, 0, None))
+                items.append((fid, encrypted_numbers, mask, num_bins, 0, None))
             else:
                 for g in sample_groups:
                     gid, sample_id_list = g
-                    items.append((encode_sum, fid, encrypted_numbers, mask, num_bins, gid, sample_id_list))
+                    items.append((fid, encrypted_numbers, mask, num_bins, gid, sample_id_list))
 
-        results = self.exe.map(_do_add, items)
+        partial_func = functools.partial(_do_add, self.cipher.name(), self.cipher.get_public_key_blob())
+        results = self.exe.map(partial_func, items)
         rl = []
         for r in results:
             rl.append(r)
         return rl
 
 
-def _do_add(item):
-    encode_sum, fid, encrypted_numbers, mask, num_bins, gid, sample_id_list = item
+def _do_add(cipher_name, public_key, item):
+    cipher = loader.find(cipher_name)
+    cipher.set_public_key(public_key)
+
+    fid, encrypted_numbers, mask, num_bins, gid, sample_id_list = item
     # bins = [0 for _ in range(num_bins)]
-    aggr = Aggregator()
+    aggr = Aggregator(cipher)
 
     bins = aggr.aggregate(
         gh_values=encrypted_numbers,

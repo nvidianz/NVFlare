@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import concurrent.futures
+import functools
 
 from nvflare.app_opt.xgboost.histogram_based_v2.cipher.cipher_loader import loader
 from nvflare.app_opt.xgboost.histogram_based_v2.cipher.he_cipher import HomomorphicCipher
@@ -34,18 +35,16 @@ class Decrypter:
         Returns: list of lists of decrypted numbers
 
         """
-        # print(f"decrypting {len(encrypted_number_groups)} number groups")
         cipher_name = self.cipher.name()
-        items = [(cipher_name, g) for g in encrypted_number_groups]
-        results = self.exe.map(_do_decrypt, items)
+        partial_func = functools.partial(_do_decrypt, cipher_name, self.cipher.get_context_blob())
+        results = self.exe.map(partial_func, encrypted_number_groups)
         rl = []
         for r in results:
             rl.append(r)
         return rl
 
 
-def _do_decrypt(item):
-    # t = time.time()
-    cipher_name, numbers = item
-    cipher = loader.load(cipher_name)
-    return cipher.decrypt_vector(numbers)
+def _do_decrypt(cipher_name, context_blob, item):
+    cipher = loader.find(cipher_name)
+    cipher.set_context(context_blob)
+    return cipher.decrypt_vector(item)

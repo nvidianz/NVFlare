@@ -12,9 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import concurrent.futures
+import functools
+import logging
 
 from nvflare.app_opt.xgboost.histogram_based_v2.cipher.cipher_loader import loader
 from nvflare.app_opt.xgboost.histogram_based_v2.cipher.he_cipher import HomomorphicCipher
+
+log = logging.getLogger(__name__)
 
 
 class Encryptor:
@@ -54,21 +58,18 @@ class Encryptor:
         for v in w_values:
             total_count += len(v)
         assert total_count == num_values
-
-        items = []
-        for i in range(workers_needed):
-            items.append((self.cipher.name(), w_values[i]))
-        return self._encrypt(items)
+        return self._encrypt(w_values)
 
     def _encrypt(self, items):
-        results = self.exe.map(_do_enc, items)
+        partial_func = functools.partial(_do_enc, self.cipher.name(), self.cipher.get_public_key_blob())
+        results = self.exe.map(partial_func, items)
         rl = []
         for r in results:
             rl.extend(r)
         return rl
 
 
-def _do_enc(item):
-    cipher_name, numbers = item
-    cipher = loader.load(cipher_name)
+def _do_enc(cipher_name, public_key, numbers):
+    cipher = loader.find(cipher_name)
+    cipher.set_public_key(public_key)
     return cipher.encrypt_vector(numbers)

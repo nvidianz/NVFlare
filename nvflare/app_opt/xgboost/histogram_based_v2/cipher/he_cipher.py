@@ -49,6 +49,24 @@ class HomomorphicCipher(ABC):
         pass
 
     @abstractmethod
+    def get_context_blob(self) -> bytes:
+        """Get entire context (including private key)
+
+        Returns:
+            Serialized context
+        """
+        pass
+
+    @abstractmethod
+    def set_context(self, context_blob: bytes):
+        """Set the context
+
+        Args:
+            context_blob: Serialized context
+        """
+        pass
+
+    @abstractmethod
     def get_public_key_blob(self) -> bytes:
         """Get serialized public key as bytes
 
