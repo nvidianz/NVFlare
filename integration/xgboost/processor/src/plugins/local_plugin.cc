@@ -2,10 +2,131 @@
  * Copyright 2014-2024 by XGBoost Contributors
  */
 #include <iostream>
+#include "local_plugin.h"
+#include "data_set_ids.h"
+
+namespace nvflare {
+
+  void LocalPlugin::EncryptGPairs(const float* in_gpair, std::size_t n_in, std::uint8_t** out_gpair, std::size_t* n_out) {
+    if (debug_) {
+      std::cout << "LocalPlugin::EncryptGPairs called with pairs size: " << n_in<< std::endl;
+    }
+
+    if (print_timing_) {
+      std::cout << "Encrypting " << n_in/2 << " GH Pairs" << std::endl;
+    }
+    auto start = std::chrono::system_clock::now();
+
+    auto pairs = std::vector<float>(in_gpair, in_gpair + n_in);
+    auto encrypted_data = EncryptVector(pairs);
+
+    if (print_timing_) {
+      auto end = std::chrono::system_clock::now();
+      auto secs = (double) std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() / 1000.0;
+      std::cout << "Encryption time: " << secs << " seconds" << std::endl;
+    }
+
+    // Serialize with DAM so the buffers can be separated after all-gather
+    DamEncoder encoder(kDataSetGHPairs, true, dam_debug_);
+    encoder.AddBuffer(encrypted_data);
+
+    *out_gpair = encoder.Finish(*n_out);
+    FreeEncryptedData(encrypted_data);
+
+    // Save pairs for future operations. This is only called on active site
+    gh_pairs_ = std::vector<float>(pairs);
+  }
+
+  void LocalPlugin::SyncEncryptedGPairs(const std::uint8_t *in_gpair, std::size_t n_bytes,
+                                        const std::uint8_t **out_gpair, std::size_t *out_n_bytes) {
+    if (debug_) {
+      std::cout << "LocalPlugin::SyncEncryptedGPairs called with buffer size: " << n_bytes << std::endl;
+    }
+
+    *out_n_bytes = n_bytes;
+    *out_gpair = in_gpair;
+    auto decoder = DamDecoder(const_cast<std::uint8_t *>(in_gpair), n_bytes, true, dam_debug_);
+    if (!decoder.IsValid()) {
+      std::cout << "LocalPlugin::SyncEncryptedGPairs called with wrong data" << std::endl;
+      return;
+    }
+
+    auto encrypted_buffer = decoder.DecodeBuffer();
+    if (debug_) {
+      std::cout << "Encrypted buffer size: " << encrypted_buffer.buf_size << std::endl;
+    }
+
+    // The caller may free buffer so a copy is needed
+    encrypted_gh_ = std::vector<std::uint8_t>(encrypted_buffer.buffer, encrypted_buffer.buffer + encrypted_buffer.buf_size);
+    FreeEncryptedData(encrypted_buffer);
+  }
+
+  void LocalPlugin::ResetHistContext(const std::uint32_t *cutptrs, std::size_t cutptr_len, const std::int32_t *bin_idx,
+                        std::size_t n_idx) {
+    if (debug_) {
+      std::cout << "LocalPlugin::ResetHistContext called with cutptrs size: " << cutptr_len << " bin_idx size: "
+        << n_idx<< std::endl;
+    }
+
+    cuts_ = std::vector<uint32_t>(cutptrs, cutptrs + cutptr_len);
+    slots_ = std::vector<int32_t>(bin_idx, bin_idx + n_idx);
+  }
+
+  void LocalPlugin::BuildEncryptedHistHori(const double *in_histogram, std::size_t len, std::uint8_t **out_hist,
+                              std::size_t *out_len) {
+    if (debug_) {
+      std::cout << "LocalPlugin::BuildEncryptedHistHori called with " << len << " entries" << std::endl;
+    }
+
+    // don't have a local implementation yet, just encoded it and let NVFlare handle it.
+    DamEncoder encoder(kDataSetHistograms, false, dam_debug_);
+    auto histograms = std::vector<double>(in_histogram, in_histogram+len);
+    encoder.AddFloatArray(histograms);
+    *out_hist = encoder.Finish(*out_len);
+  }
+
+  void LocalPlugin::SyncEncryptedHistHori(const std::uint8_t *buffer, std::size_t len, double **out_hist,
+                             std::size_t *out_len) {
+    if (debug_) {
+      std::cout << "LocalPlugin::SyncEncryptedHistHori called with buffer size: " << len << std::endl;
+    }
+
+    // No local implementation yet, just decode data from NVFlare
+    *out_hist = nullptr;
+    *out_len = 0;
+    DamDecoder decoder(const_cast<std::uint8_t *>(buffer), len, false, dam_debug_);
+    if (!decoder.IsValid()) {
+      std::cout << "Not DAM encoded buffer, ignored" << std::endl;
+      return;
+    }
+
+    if (decoder.GetDataSetId() != kDataSetHistogramResult) {
+      std::cout << "Invalid dataset for SyncEncryptedHistHori: " << decoder.GetDataSetId() << std::endl;
+      return;
+    }
+
+    histo_ = decoder.DecodeFloatArray();
+    *out_hist = histo_.data();
+    *out_len = histo_.size();
+  }
+
+  void LocalPlugin::BuildEncryptedHistVert(const std::size_t **ridx, const std::size_t *sizes, const std::int32_t *nidx,
+                              std::size_t len, std::uint8_t **out_hist, std::size_t *out_len) {
+
+
+  }
+
+  void LocalPlugin::SyncEncryptedHistVert(std::uint8_t *hist_buffer, std::size_t len, double **out,
+                             std::size_t *out_len) {
+
+  }
+} // namespace nvflare
+
+#include <iostream>
 #include <cstring>
 #include <cstdint>
 #include <chrono>
-#include "local_processor.h"
+#include "local_plugin.h"
 #include "data_set_ids.h"
 #include "util.h"
 

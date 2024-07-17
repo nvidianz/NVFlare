@@ -20,6 +20,7 @@
 #include <vector>      // for vector
 
 #include "delegated_plugin.h"
+#include "nvflare_plugin.h"
 #include "pass_thru_plugin.h"
 #include "util.h"
 
@@ -63,11 +64,13 @@ DelegatedPlugin::DelegatedPlugin(std::vector<std::pair<std::string_view, std::st
   BasePlugin(args) {
 
   auto name = get_string(args, "name");
-  if (name == "pass-thru")
-  {
+  if (name == "pass-thru") {
     plugin_ = new PassThruPlugin(args);
+  } if (name == "nvflare") {
+    plugin_ = new NvflarePlugin(args);
   } else {
-    throw std::invalid_argument{"Unknown plugin name: " + name};
+      throw std::invalid_argument{"Unknown plugin name: " + name};
+    }
   }
 }
 } // namespace nvflare
