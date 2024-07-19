@@ -54,7 +54,7 @@ public:
     plugin_->SyncEncryptedHistHori(buffer, len, out_hist, out_len);
   }
 
-  void BuildEncryptedHistVert(const std::size_t** ridx, const std::size_t* sizes, const std::int32_t* nidx,
+  void BuildEncryptedHistVert(const std::uint64_t** ridx, const std::size_t* sizes, const std::int32_t* nidx,
     std::size_t len, std::uint8_t** out_hist, std::size_t* out_len) override {
     plugin_->BuildEncryptedHistVert(ridx, sizes, nidx, len, out_hist, out_len);
   }

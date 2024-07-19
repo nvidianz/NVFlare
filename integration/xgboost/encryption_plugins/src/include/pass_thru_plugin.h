@@ -26,7 +26,7 @@ namespace nvflare {
 
     ~PassThruPlugin() override = default;
 
-    // Horizontal in local plugin still goes through NVFlare so it needs to be overwritten
+    // Horizontal in local plugin still goes through NVFlare, so it needs to be overwritten
     void BuildEncryptedHistHori(const double *in_histogram, std::size_t len, std::uint8_t **out_hist,
                                 std::size_t *out_len) override;
 

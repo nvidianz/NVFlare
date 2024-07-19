@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <algorithm>   // for copy_n, transform
 #include <memory>      // for shared_ptr
 #include <stdexcept>   // for invalid_argument
 #include <string_view> // for string_view
@@ -69,8 +68,7 @@ DelegatedPlugin::DelegatedPlugin(std::vector<std::pair<std::string_view, std::st
   } if (name == "nvflare") {
     plugin_ = new NvflarePlugin(args);
   } else {
-      throw std::invalid_argument{"Unknown plugin name: " + name};
-    }
+    throw std::invalid_argument{"Unknown plugin name: " + name};
   }
 }
 } // namespace nvflare
@@ -165,7 +163,7 @@ int NVF_C FederatedPluginBuildEncryptedHistVert(
   });
 }
 
-int NVF_C FederatedPluginSyncEnrcyptedHistVert(FederatedPluginHandle handle,
+int NVF_C FederatedPluginSyncEncryptedHistVert(FederatedPluginHandle handle,
                                                uint8_t *in_hist, size_t len,
                                                double **out_hist,
                                                size_t *out_len) {

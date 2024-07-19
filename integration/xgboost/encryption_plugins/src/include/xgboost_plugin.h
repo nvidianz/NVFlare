@@ -59,7 +59,7 @@ public:
   virtual void SyncEncryptedHistHori(std::uint8_t const *buffer, std::size_t len,
                                      double **out_hist, std::size_t *out_len) = 0;
 
-  virtual void BuildEncryptedHistVert(std::size_t const **ridx,
+  virtual void BuildEncryptedHistVert(std::uint64_t const **ridx,
                                       std::size_t const *sizes,
                                       std::int32_t const *nidx, std::size_t len,
                                       std::uint8_t **out_hist, std::size_t *out_len) = 0;

@@ -23,13 +23,12 @@ namespace nvflare {
 // A base plugin for all plugins that handle encryption locally in C++
 class LocalPlugin : public BasePlugin {
 protected:
-  std::vector<float> gh_pairs_;
+  std::vector<double> gh_pairs_;
   std::vector<uint8_t> encrypted_gh_;
   std::vector<double> histo_;
   std::vector<uint32_t> cuts_;
   std::vector<int32_t> slots_;
-
-
+  std::vector<uint8_t> buffer_;
 
 public:
   explicit LocalPlugin(std::vector<std::pair<std::string_view, std::string_view>> const &args) :
@@ -52,7 +51,7 @@ public:
   void SyncEncryptedHistHori(const std::uint8_t *buffer, std::size_t len, double **out_hist,
                              std::size_t *out_len) override;
 
-  void BuildEncryptedHistVert(const std::size_t **ridx, const std::size_t *sizes, const std::int32_t *nidx,
+  void BuildEncryptedHistVert(const std::uint64_t **ridx, const std::size_t *sizes, const std::int32_t *nidx,
                               std::size_t len, std::uint8_t **out_hist, std::size_t *out_len) override;
 
   void SyncEncryptedHistVert(std::uint8_t *hist_buffer, std::size_t len, double **out,
@@ -95,5 +94,14 @@ public:
     ciphertext.buf_size = 0;
   };
 
+private:
+
+  void BuildEncryptedHistVertActive(const std::uint64_t **ridx, const std::size_t *sizes, const std::int32_t *nidx,
+                                    std::size_t len, std::uint8_t **out_hist, std::size_t *out_len);
+
+  void BuildEncryptedHistVertPassive(const std::uint64_t **ridx, const std::size_t *sizes, const std::int32_t *nidx,
+                                     std::size_t len, std::uint8_t **out_hist, std::size_t *out_len);
+
 };
+
 } // namespace nvflare

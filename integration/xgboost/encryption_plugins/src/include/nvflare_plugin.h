@@ -25,26 +25,29 @@
 namespace nvflare {
 
 // Plugin that uses Python TenSeal and GRPC.
-class NvflarePlugin : BasePlugin {
+class NvflarePlugin : public BasePlugin {
   // Buffer for storing encrypted gradient pairs.
   std::vector<std::uint8_t> encrypted_gpairs_;
   // Buffer for histogram cut pointers (indptr of a CSC).
   std::vector<std::uint32_t> cut_ptrs_;
   // Buffer for histogram index.
   std::vector<std::int32_t> bin_idx_;
+  std::vector<double> gh_pairs_;
 
   bool feature_sent_{false};
   // The feature index.
   std::vector<std::int64_t> features_;
   // Buffer for output histogram.
   std::vector<std::uint8_t> encrypted_hist_;
+  // A temporary buffer to hold return value
+  std::vector<std::uint8_t> buffer_;
   // Buffer for clear histogram
   std::vector<double> hist_;
 
 public:
-  NvflarePlugin(std::vector<std::pair<std::string_view, std::string_view>> const &args) : BasePlugin(args) {}
+  explicit NvflarePlugin(std::vector<std::pair<std::string_view, std::string_view>> const &args) : BasePlugin(args) {}
 
-  ~NvflarePlugin() = default;
+  ~NvflarePlugin() override = default;
   
   // Gradient pairs
   void EncryptGPairs(float const *in_gpair, std::size_t n_in,
@@ -64,7 +67,7 @@ public:
   void SyncEncryptedHistHori(std::uint8_t const *buffer, std::size_t len,
                              double **out_hist, std::size_t *out_len) override;
 
-  void BuildEncryptedHistVert(std::size_t const **ridx,
+  void BuildEncryptedHistVert(std::uint64_t const **ridx,
                               std::size_t const *sizes,
                               std::int32_t const *nidx, std::size_t len,
                               std::uint8_t **out_hist, std::size_t *out_len) override;
