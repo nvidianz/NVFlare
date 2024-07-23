@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include <iostream>
+#include <algorithm>
 
 #include "pass_thru_plugin.h"
 #include "data_set_ids.h"
@@ -70,7 +71,7 @@ void PassThruPlugin::SyncEncryptedHistHori(const std::uint8_t *buffer, std::size
 }
 
 Buffer PassThruPlugin::EncryptVector(const std::vector<double>& cleartext) {
-  if (debug_) {
+  if (debug_ && cleartext.size() > 2) {
     std::cout << "PassThruPlugin::EncryptVector called with cleartext size: " << cleartext.size() << std::endl;
   }
 

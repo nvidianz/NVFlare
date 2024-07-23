@@ -17,6 +17,8 @@
 #include <stdexcept>   // for invalid_argument
 #include <string_view> // for string_view
 #include <vector>      // for vector
+#include <algorithm>   // for transform
+#include <iostream>
 
 #include "delegated_plugin.h"
 #include "nvflare_plugin.h"
@@ -63,9 +65,10 @@ DelegatedPlugin::DelegatedPlugin(std::vector<std::pair<std::string_view, std::st
   BasePlugin(args) {
 
   auto name = get_string(args, "name");
+  // std::cout << "==== Name is " << name << std::endl;
   if (name == "pass-thru") {
     plugin_ = new PassThruPlugin(args);
-  } if (name == "nvflare") {
+  } else if (name == "nvflare") {
     plugin_ = new NvflarePlugin(args);
   } else {
     throw std::invalid_argument{"Unknown plugin name: " + name};
@@ -85,6 +88,7 @@ NVF_C char const *FederatedPluginErrorMsg() {
 }
 
 FederatedPluginHandle NVF_C FederatedPluginCreate(int argc, char const **argv) {
+  // std::cout << "==== FedreatedPluginCreate called with argc=" << argc << std::endl;
   using namespace nvflare;
   try {
     auto pptr = new std::shared_ptr<BasePlugin>;
@@ -103,8 +107,10 @@ FederatedPluginHandle NVF_C FederatedPluginCreate(int argc, char const **argv) {
           return std::make_pair(key, value);
         });
     *pptr = std::make_shared<DelegatedPlugin>(args);
+    // std::cout << "==== Plugin created: " << pptr << std::endl;
     return pptr;
   } catch (std::exception const &e) {
+    // std::cout << "==== Create exception " << e.what() << std::endl;
     GlobalErrorMsg() = e.what();
     return nullptr;
   }

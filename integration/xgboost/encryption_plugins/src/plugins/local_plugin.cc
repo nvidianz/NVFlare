@@ -2,6 +2,8 @@
  * Copyright 2014-2024 by XGBoost Contributors
  */
 #include <iostream>
+#include <chrono>
+#include <algorithm>
 #include "local_plugin.h"
 #include "data_set_ids.h"
 
@@ -35,11 +37,15 @@ void LocalPlugin::EncryptGPairs(const float *in_gpair, std::size_t n_in, std::ui
   auto buffer = encoder.Finish(size);
   FreeEncryptedData(encrypted_data);
   buffer_.resize(size);
-  std::copy_n(buffer, *n_out, buffer_.begin());
+  std::copy_n(buffer, size, buffer_.begin());
   free(buffer);
 
   *out_gpair = buffer_.data();
   *n_out = buffer_.size();
+  if (debug_) {
+    std::cout << "Encrypted GPairs:" << std::endl;
+    print_buffer(*out_gpair, *n_out);
+  }
 
   // Save pairs for future operations. This is only called on active site
   gh_pairs_ = std::vector<double>(double_pairs);
@@ -48,7 +54,8 @@ void LocalPlugin::EncryptGPairs(const float *in_gpair, std::size_t n_in, std::ui
 void LocalPlugin::SyncEncryptedGPairs(const std::uint8_t *in_gpair, std::size_t n_bytes,
                                       const std::uint8_t **out_gpair, std::size_t *out_n_bytes) {
   if (debug_) {
-    std::cout << "LocalPlugin::SyncEncryptedGPairs called with buffer size: " << n_bytes << std::endl;
+    std::cout << "LocalPlugin::SyncEncryptedGPairs called with buffer:" << std::endl;
+    print_buffer(const_cast<uint8_t *>(in_gpair), n_bytes);
   }
 
   *out_n_bytes = n_bytes;
@@ -268,7 +275,7 @@ void LocalPlugin::SyncEncryptedHistVert(std::uint8_t *hist_buffer, std::size_t l
 
   *out = nullptr;
   *out_len = 0;
-  if (!gh_pairs_.empty()) {
+  if (gh_pairs_.empty()) {
     // Do nothing for passive worker
     return;
   }
