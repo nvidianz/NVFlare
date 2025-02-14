@@ -39,6 +39,8 @@ class VarName:
     STREAMING_ACK_INTERVAL = "streaming_ack_interval"
     STREAMING_MAX_OUT_SEQ_CHUNKS = "streaming_max_out_seq_chunks"
     STREAMING_READ_TIMEOUT = "streaming_read_timeout"
+    STREAMING_RETRY_WAIT = "streaming_retry_wait"
+    STREAMING_RETRY_TIMEOUT = "streaming_retry_TIMEOUT"
 
 
 class CommConfigurator:
@@ -113,6 +115,12 @@ class CommConfigurator:
 
     def get_streaming_read_timeout(self, default):
         return ConfigService.get_int_var(VarName.STREAMING_READ_TIMEOUT, self.config, default)
+
+    def get_streaming_retry_wait(self, default):
+        return ConfigService.get_int_var(VarName.STREAMING_RETRY_WAIT, self.config, default)
+
+    def get_streaming_retry_timeout(self, default):
+        return ConfigService.get_int_var(VarName.STREAMING_RETRY_TIMEOUT, self.config, default)
 
     def get_int_var(self, name: str, default=None):
         return ConfigService.get_int_var(name, self.config, default=default)

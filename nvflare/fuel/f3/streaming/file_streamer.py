@@ -93,7 +93,7 @@ class FileStreamer:
         self.byte_receiver = byte_receiver
 
     def send(
-        self, channel: str, topic: str, target: str, message: Message, secure=False, optional=False
+        self, channel: str, topic: str, target: str, message: Message, reliable=True, secure=False, optional=False
     ) -> StreamFuture:
         file_name = Path(message.payload).name
         file_stream = FileStream(message.payload, message.headers)
@@ -106,7 +106,7 @@ class FileStreamer:
         )
 
         return self.byte_streamer.send(
-            channel, topic, target, message.headers, file_stream, STREAM_TYPE_FILE, secure, optional
+            channel, topic, target, message.headers, file_stream, STREAM_TYPE_FILE, reliable, secure, optional
         )
 
     def register_file_callback(self, channel, topic, file_cb: Callable, *args, **kwargs):
