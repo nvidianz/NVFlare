@@ -266,7 +266,7 @@ class RxTask:
 
             self.offset += len(result)
 
-            if self.offset - self.offset_ack >= self.ack_interval or (self.reliable and self.seq != self.seq_ack):
+            if self.offset - self.offset_ack >= self.ack_interval or last_chunk:
                 self._send_ack(self.offset, self.seq)
 
             self.stream_future.set_progress(self.offset)
