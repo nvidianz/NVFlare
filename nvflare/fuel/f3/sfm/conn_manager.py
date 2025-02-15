@@ -143,6 +143,7 @@ class ConnManager(ConnMonitor):
         self.started = True
 
     def stop(self):
+        self.stopped = True
 
         self.heartbeat_monitor.stop()
 
@@ -154,8 +155,6 @@ class ConnManager(ConnMonitor):
 
         self.conn_mgr_executor.shutdown(True)
         self.frame_mgr_executor.shutdown(True)
-
-        self.stopped = True
 
     def find_endpoint(self, name: str) -> Optional[Endpoint]:
 
@@ -487,7 +486,7 @@ class SfmFrameReceiver(FrameReceiver):
         try:
             self.conn_manager.process_frame(self.conn, frame)
         except Exception as ex:
-            log.error(f"Error processing frame: {secure_format_exception(ex)}")
+            log.error(f"Error processing SFM frame: {secure_format_exception(ex)}")
             log.debug(secure_format_traceback())
 
 
