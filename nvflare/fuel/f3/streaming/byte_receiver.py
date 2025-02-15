@@ -80,7 +80,6 @@ class RxTask:
         self.waiter = threading.Event()
         self.lock = threading.Lock()
         self.eos = False
-        self.last_chunk_received = False
 
         comm_config = CommConfigurator()
         self.timeout = comm_config.get_streaming_read_timeout(READ_TIMEOUT)
@@ -201,11 +200,9 @@ class RxTask:
         data_type = message.get_header(StreamHeaderKey.DATA_TYPE)
 
         last_chunk = data_type == StreamDataType.FINAL
-        if last_chunk:
-            self.last_chunk_received = True
 
         if seq < self.next_seq:
-            log.warning(f"{self} Duplicate chunk ignored {seq=}")
+            log.debug(f"{self} Duplicate chunk ignored {seq=}")
             if self.reliable:
                 # Sender keeps sending duplicate message means the ACK is not received
                 self._send_ack(self.offset, seq)
@@ -269,7 +266,7 @@ class RxTask:
 
             self.offset += len(result)
 
-            if self.offset - self.offset_ack >= self.ack_interval or (self.reliable and self.seq > self.seq_ack):
+            if self.offset - self.offset_ack >= self.ack_interval:
                 self._send_ack(self.offset, self.seq)
 
             self.stream_future.set_progress(self.offset)

@@ -274,6 +274,11 @@ class TxTask(StreamTaskSpec):
             self.stop(StreamError(f"{self} Received error from {origin}: {error}"), notify=False)
             return
 
+        if self.reliable and ack_seq is None:
+            self.stop(StreamError(f"{self} Receiving end at {origin} doesn't support reliable streaming"),
+                      notify=True)
+            return
+
         if offset > self.offset_ack:
             self.offset_ack = offset
 
@@ -411,7 +416,7 @@ class ByteStreamer:
             offset = message.get_header(StreamHeaderKey.OFFSET, None)
             seq = message.get_header(StreamHeaderKey.SEQUENCE, None)
             # Last few ACKs always arrive late so this is normal
-            log.error(f"ACK for stream {sid} received late from {origin} with offset {offset} seq {seq}")
+            log.warning(f"ACK for stream {sid} received late from {origin} with offset {offset} seq {seq}")
             return
 
         tx_task.handle_ack(message)
