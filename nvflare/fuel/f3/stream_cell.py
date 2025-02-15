@@ -121,7 +121,7 @@ class StreamCell:
         if not isinstance(message.payload, (bytes, bytearray, memoryview, list)):
             raise StreamError(f"Message payload is not a byte array: {type(message.payload)}")
 
-        return self.blob_streamer.send(channel, topic, target, message, secure, optional)
+        return self.blob_streamer.send(channel, topic, target, message, True, secure, optional)
 
     def register_blob_cb(self, channel: str, topic: str, blob_cb, *args, **kwargs):
         """Registers a callback for receiving the blob.

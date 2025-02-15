@@ -40,7 +40,7 @@ class VarName:
     STREAMING_MAX_OUT_SEQ_CHUNKS = "streaming_max_out_seq_chunks"
     STREAMING_READ_TIMEOUT = "streaming_read_timeout"
     STREAMING_RETRY_WAIT = "streaming_retry_wait"
-    STREAMING_RETRY_TIMEOUT = "streaming_retry_TIMEOUT"
+    STREAMING_RETRY_TIMEOUT = "streaming_retry_timeout"
 
 
 class CommConfigurator:

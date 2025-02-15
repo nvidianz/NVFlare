@@ -81,11 +81,11 @@ class RxTask:
         self.lock = threading.Lock()
         self.eos = False
         self.last_chunk_received = False
-        self.reliable = None
 
-        self.timeout = CommConfigurator().get_streaming_read_timeout(READ_TIMEOUT)
-        self.ack_interval = CommConfigurator().get_streaming_ack_interval(ACK_INTERVAL)
-        self.max_out_seq = CommConfigurator().get_streaming_max_out_seq_chunks(MAX_OUT_SEQ_CHUNKS)
+        comm_config = CommConfigurator()
+        self.timeout = comm_config.get_streaming_read_timeout(READ_TIMEOUT)
+        self.ack_interval = comm_config.get_streaming_ack_interval(ACK_INTERVAL)
+        self.max_out_seq = comm_config.get_streaming_max_out_seq_chunks(MAX_OUT_SEQ_CHUNKS)
 
     def __str__(self):
         return f"Rx[SID:{self.sid} from {self.origin} for {self.channel}/{self.topic} Size: {self.size}]"
@@ -206,6 +206,9 @@ class RxTask:
 
         if seq < self.next_seq:
             log.warning(f"{self} Duplicate chunk ignored {seq=}")
+            if self.reliable:
+                # Sender keeps sending duplicate message means the ACK is not received
+                self._send_ack(self.offset, seq)
             return
 
         if seq == self.next_seq:
@@ -266,7 +269,7 @@ class RxTask:
 
             self.offset += len(result)
 
-            if self.offset - self.offset_ack > self.ack_interval or (self.reliable and self.seq > self.seq_ack):
+            if self.offset - self.offset_ack >= self.ack_interval or (self.reliable and self.seq > self.seq_ack):
                 self._send_ack(self.offset, self.seq)
 
             self.stream_future.set_progress(self.offset)
@@ -299,7 +302,11 @@ class RxTask:
                 StreamHeaderKey.SEQUENCE: seq,
             }
         )
-        self.cell.fire_and_forget(STREAM_CHANNEL, STREAM_ACK_TOPIC, self.origin, message)
+        errors = self.cell.fire_and_forget(STREAM_CHANNEL, STREAM_ACK_TOPIC, self.origin, message)
+        error = errors.get(self.origin)
+        if error:
+            log.error(f"{self} Failed to ack seq {seq} to {self.origin}: {error}")
+
         self.offset_ack = offset
         self.seq_ack = seq
 

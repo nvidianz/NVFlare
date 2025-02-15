@@ -157,7 +157,8 @@ class BlobStreamer:
         self.byte_receiver = byte_receiver
 
     def send(
-        self, channel: str, topic: str, target: str, message: Message, reliable: bool, secure: bool, optional: bool
+        self, channel: str, topic: str, target: str, message: Message,
+            reliable: bool = True, secure: bool = False, optional: bool = False
     ) -> StreamFuture:
         if message.payload is None:
             message.payload = bytes(0)

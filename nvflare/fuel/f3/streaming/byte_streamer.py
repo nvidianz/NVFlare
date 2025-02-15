@@ -93,17 +93,18 @@ class TxTask(StreamTaskSpec):
         self.stream_future = StreamFuture(self.sid, task_handle=self)
         self.stream_future.set_size(stream.get_size())
 
-        self.window_size = CommConfigurator().get_streaming_window_size(STREAM_WINDOW_SIZE)
-        self.ack_wait = CommConfigurator().get_streaming_ack_wait(STREAM_ACK_WAIT)
-        self.retry_wait = CommConfigurator().get_streaming_retry_wait(STREAM_RETRY_WAIT)
-        self.retry_timeout = CommConfigurator().get_streaming_retry_wait(STREAM_RETRY_TIMEOUT)
+        comm_config = CommConfigurator()
+        self.window_size = comm_config.get_streaming_window_size(STREAM_WINDOW_SIZE)
+        self.ack_wait = comm_config.get_streaming_ack_wait(STREAM_ACK_WAIT)
+        self.retry_wait = comm_config.get_streaming_retry_wait(STREAM_RETRY_WAIT)
+        self.retry_timeout = comm_config.get_streaming_retry_timeout(STREAM_RETRY_TIMEOUT)
 
         if self.reliable:
-            self.retry_messages = {}
+            self.pending_messages = {}
             self.retry_lock = threading.Lock()
             self.retry_task_future = stream_thread_pool.submit(self.retry_task)
         else:
-            self.retry_messages = None
+            self.pending_messages = None
             self.retry_lock = None
             self.retry_task_future = None
 
@@ -124,7 +125,7 @@ class TxTask(StreamTaskSpec):
             # Flow control
             window = self.offset - self.offset_ack
             # It may take several ACKs to clear up the window
-            while window > self.window_size:
+            while window >= self.window_size:
                 log.debug(f"{self} window size {window} exceeds limit: {self.window_size}")
                 self.ack_waiter.clear()
 
@@ -184,10 +185,10 @@ class TxTask(StreamTaskSpec):
             curr_time = time.time()
             # The tuple is start, last_retry, message
             with self.retry_lock:
-                self.retry_messages[self.seq] = curr_time, curr_time, message
+                self.pending_messages[self.seq] = curr_time, curr_time, message
                 # sanity check
                 pending_size = sum(len(msg.payload) if msg.payload else 0
-                                   for _, _, msg in self.retry_messages.values())
+                                   for _, _, msg in self.pending_messages.values())
                 # Pending messages may exceed windows size by a few chunks due to the timeing of cleanup
                 if pending_size > 2*self.window_size:
                     log.error(f"Too many retry messages ({pending_size} > {self.window_size})")
@@ -218,12 +219,13 @@ class TxTask(StreamTaskSpec):
         if self.stopped:
             return
 
-        if not error and self.retry_messages:
-            # Can't really end stream if retry_messages are not empty
+        if not error and self.pending_messages:
+            # Can't really end stream if pending_messages are not empty
             self.stopping = True
             return
 
         self.stopped = True
+        self.remove_task()
 
         if self.task_future:
             self.task_future.cancel()
@@ -235,8 +237,8 @@ class TxTask(StreamTaskSpec):
             return
 
         with self.retry_lock:
-            if self.retry_messages:
-                self.retry_messages.clear()
+            if self.pending_messages:
+                self.pending_messages.clear()
 
         # Error handling
         log.debug(f"{self} Stream error: {error}")
@@ -277,12 +279,12 @@ class TxTask(StreamTaskSpec):
 
         if self.reliable:
             with self.retry_lock:
-                if self.retry_messages and ack_seq is not None:
-                    for seq, value in list(self.retry_messages.items()):
+                if self.pending_messages and ack_seq is not None:
+                    for seq, value in list(self.pending_messages.items()):
                         if seq <= ack_seq:
-                            del self.retry_messages[seq]
+                            del self.pending_messages[seq]
 
-            if self.stopping and not self.retry_messages:
+            if self.stopping and not self.pending_messages:
                 self.stop()
 
         if not self.ack_waiter.is_set():
@@ -297,14 +299,14 @@ class TxTask(StreamTaskSpec):
     def retry_task(self):
         try:
             while not self.stopped:
-
-                if self.stopping and not self.retry_messages:
-                    self.stop()
-                    return
-
-                curr_time = time.time()
                 with self.retry_lock:
-                    for seq, value in self.retry_messages.items():
+                    if not self.pending_messages:
+                        if self.stopping:
+                            self.stop()
+                        continue
+
+                    curr_time = time.time()
+                    for seq, value in self.pending_messages.items():
                         start_time, last_retry, message = value
                         retry_time = curr_time - start_time
                         if retry_time > self.retry_timeout:
@@ -323,12 +325,17 @@ class TxTask(StreamTaskSpec):
                         if error:
                             log.error(f"{self} Message sending error to target {self.target}: {error}, will retry")
 
-                        self.retry_messages[seq] = start_time, curr_time, message
+                        self.pending_messages[seq] = start_time, curr_time, message
 
                 time.sleep(self.retry_wait)
 
         except Exception as ex:
             log.error(f"{self} retry thread ended due to error: {ex}")
+
+    def remove_task(self):
+        with ByteStreamer.map_lock:
+            ByteStreamer.tx_task_map.pop(self.sid, None)
+            log.debug(f"{self} is removed")
 
 
 class ByteStreamer:
@@ -391,11 +398,6 @@ class ByteStreamer:
             msg = f"{task} Error while sending: {ex}"
             log.error(msg)
             task.stop(StreamError(msg), True)
-        finally:
-            # Delete task after it's sent
-            with ByteStreamer.map_lock:
-                ByteStreamer.tx_task_map.pop(task.sid, None)
-                log.debug(f"{task} is removed")
 
     @staticmethod
     def _ack_handler(message: Message):
@@ -407,8 +409,9 @@ class ByteStreamer:
         if not tx_task:
             origin = message.get_header(MessageHeaderKey.ORIGIN)
             offset = message.get_header(StreamHeaderKey.OFFSET, None)
+            seq = message.get_header(StreamHeaderKey.SEQUENCE, None)
             # Last few ACKs always arrive late so this is normal
-            log.debug(f"ACK for stream {sid} received late from {origin} with offset {offset}")
+            log.error(f"ACK for stream {sid} received late from {origin} with offset {offset} seq {seq}")
             return
 
         tx_task.handle_ack(message)

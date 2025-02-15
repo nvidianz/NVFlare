@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 
 
 class FileStream(Stream):
-    def __init__(self, file_name: str, headers: Optional[dict]):
+    def __init__(self, file_name: str, headers: Optional[dict] = None):
         self.file = open(file_name, "rb")
         size = self.file.seek(0, os.SEEK_END)
         self.file.seek(0, os.SEEK_SET)
@@ -93,20 +93,18 @@ class FileStreamer:
         self.byte_receiver = byte_receiver
 
     def send(
-        self, channel: str, topic: str, target: str, message: Message, reliable=True, secure=False, optional=False
+        self, channel: str, topic: str, target: str, file_path: str, reliable=True, secure=False, optional=False
     ) -> StreamFuture:
-        file_name = Path(message.payload).name
-        file_stream = FileStream(message.payload, message.headers)
+        file_name = Path(file_path).name
+        file_stream = FileStream(file_path)
 
-        message.add_headers(
-            {
-                StreamHeaderKey.SIZE: file_stream.get_size(),
-                StreamHeaderKey.FILE_NAME: file_name,
-            }
-        )
+        headers = {
+            StreamHeaderKey.SIZE: file_stream.get_size(),
+            StreamHeaderKey.FILE_NAME: file_name,
+        }
 
         return self.byte_streamer.send(
-            channel, topic, target, message.headers, file_stream, STREAM_TYPE_FILE, reliable, secure, optional
+            channel, topic, target, headers, file_stream, STREAM_TYPE_FILE, reliable, secure, optional
         )
 
     def register_file_callback(self, channel, topic, file_cb: Callable, *args, **kwargs):

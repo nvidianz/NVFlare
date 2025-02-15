@@ -137,8 +137,8 @@ class ObjectStreamer:
                     StreamHeaderKey.OBJECT_INDEX: task.index,
                 }
             )
-            blob_future = self.blob_streamer.send(task.channel, task.topic, task.target, task.headers, obj)
-
+            blob_future = self.blob_streamer.send(task.channel, task.topic, task.target, Message(task.headers, obj),
+                                                  True, False, False)
             # Wait till it's done
             bytes_sent = blob_future.result()
             log.debug(f"Stream {task.obj_sid} Object {task.index} is sent ({bytes_sent}")
