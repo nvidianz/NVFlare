@@ -37,6 +37,7 @@ from nvflare.fuel.f3.streaming.stream_utils import (
     wrap_view,
 )
 
+# Default settings
 STREAM_CHUNK_SIZE = 1024 * 1024
 STREAM_WINDOW_SIZE = 16 * STREAM_CHUNK_SIZE
 STREAM_ACK_WAIT = 300
@@ -101,7 +102,7 @@ class TxTask(StreamTaskSpec):
 
         if self.reliable:
             self.pending_messages = {}
-            self.retry_lock = threading.Lock()
+            self.retry_lock = threading.RLock()  # Need reentrant lock
             self.retry_task_future = stream_thread_pool.submit(self.retry_task)
         else:
             self.pending_messages = None
@@ -125,7 +126,7 @@ class TxTask(StreamTaskSpec):
             # Flow control
             window = self.offset - self.offset_ack
             # It may take several ACKs to clear up the window
-            while window >= self.window_size:
+            while window >= self.window_size and not self.stopped:
                 log.debug(f"{self} window size {window} exceeds limit: {self.window_size}")
                 self.ack_waiter.clear()
 
@@ -200,7 +201,7 @@ class TxTask(StreamTaskSpec):
         if error:
             msg = f"{self} Message sending error to target {self.target}: {error}"
             if self.reliable:
-                log.error(msg + ", will retry")
+                log.error(f"{msg}, will retry in {self.retry_wait} seconds")
             else:
                 self.stop(StreamError(msg))
                 return
@@ -220,12 +221,14 @@ class TxTask(StreamTaskSpec):
             return
 
         if not error and self.pending_messages:
-            # Can't really end stream if pending_messages are not empty
+            # Can't end stream if pending_messages are not empty
             self.stopping = True
             return
 
         self.stopped = True
         self.remove_task()
+        if not self.ack_waiter.is_set():
+            self.ack_waiter.set()
 
         if self.task_future:
             self.task_future.cancel()
@@ -236,9 +239,10 @@ class TxTask(StreamTaskSpec):
                 self.stream_future.set_result(self.offset)
             return
 
-        with self.retry_lock:
-            if self.pending_messages:
-                self.pending_messages.clear()
+        if self.reliable:
+            with self.retry_lock:
+                if self.pending_messages:
+                    self.pending_messages.clear()
 
         # Error handling
         log.debug(f"{self} Stream error: {error}")
@@ -316,7 +320,9 @@ class TxTask(StreamTaskSpec):
                         retry_time = curr_time - start_time
                         if retry_time > self.retry_timeout:
                             msg = f"{self} Seq {seq} retry failed after trying for {retry_time} seconds"
+                            log.error(msg)
                             self.stop(error=StreamError(msg))
+                            break
 
                         wait_time = curr_time - last_retry
                         if wait_time < self.retry_wait:
@@ -328,7 +334,8 @@ class TxTask(StreamTaskSpec):
                         )
                         error = errors.get(self.target)
                         if error:
-                            log.error(f"{self} Message sending error to target {self.target}: {error}, will retry")
+                            log.error(f"{self} Message sending error to target "
+                                      f"{self.target}: {error}, will retry again in {self.retry_wait} seconds")
 
                         self.pending_messages[seq] = start_time, curr_time, message
 
@@ -415,8 +422,8 @@ class ByteStreamer:
             origin = message.get_header(MessageHeaderKey.ORIGIN)
             offset = message.get_header(StreamHeaderKey.OFFSET, None)
             seq = message.get_header(StreamHeaderKey.SEQUENCE, None)
-            # Last few ACKs always arrive late so this is normal
-            log.warning(f"ACK for stream {sid} received late from {origin} with offset {offset} seq {seq}")
+            # Last few ACKs always arrive late for non-reliable streaming
+            log.debug(f"ACK for stream {sid} received late from {origin} with offset {offset} seq {seq}")
             return
 
         tx_task.handle_ack(message)
