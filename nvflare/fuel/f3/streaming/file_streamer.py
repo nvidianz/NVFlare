@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from nvflare.fuel.f3.connection import BytesAlike
-from nvflare.fuel.f3.message import Message
 from nvflare.fuel.f3.streaming.byte_receiver import ByteReceiver
 from nvflare.fuel.f3.streaming.byte_streamer import STREAM_TYPE_FILE, ByteStreamer
 from nvflare.fuel.f3.streaming.stream_const import StreamHeaderKey

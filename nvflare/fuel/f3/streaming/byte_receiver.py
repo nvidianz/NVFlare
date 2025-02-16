@@ -234,7 +234,7 @@ class RxTask:
 
     def _try_to_read(self, size: int) -> Tuple[int, Optional[BytesAlike]]:
 
-        with (self.lock):
+        with self.lock:
             if self.eos:
                 return RESULT_EOS, None
 

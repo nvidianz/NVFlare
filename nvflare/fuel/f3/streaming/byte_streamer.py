@@ -188,10 +188,11 @@ class TxTask(StreamTaskSpec):
             with self.retry_lock:
                 self.pending_messages[self.seq] = curr_time, curr_time, message
                 # sanity check
-                pending_size = sum(len(msg.payload) if msg.payload else 0
-                                   for _, _, msg in self.pending_messages.values())
+                pending_size = sum(
+                    len(msg.payload) if msg.payload else 0 for _, _, msg in self.pending_messages.values()
+                )
                 # Pending messages may exceed windows size by a few chunks due to the timeing of cleanup
-                if pending_size > 2*self.window_size:
+                if pending_size > 2 * self.window_size:
                     log.error(f"Too many retry messages ({pending_size} > {self.window_size})")
 
         errors = self.cell.fire_and_forget(
@@ -279,8 +280,7 @@ class TxTask(StreamTaskSpec):
             return
 
         if self.reliable and ack_seq is None:
-            self.stop(StreamError(f"{self} Receiving end at {origin} doesn't support reliable streaming"),
-                      notify=True)
+            self.stop(StreamError(f"{self} Receiving end at {origin} doesn't support reliable streaming"), notify=True)
             return
 
         if offset > self.offset_ack:
@@ -329,13 +329,19 @@ class TxTask(StreamTaskSpec):
                             continue
 
                         errors = self.cell.fire_and_forget(
-                            STREAM_CHANNEL, STREAM_DATA_TOPIC, self.target, message, secure=self.secure,
-                            optional=self.optional
+                            STREAM_CHANNEL,
+                            STREAM_DATA_TOPIC,
+                            self.target,
+                            message,
+                            secure=self.secure,
+                            optional=self.optional,
                         )
                         error = errors.get(self.target)
                         if error:
-                            log.error(f"{self} Message sending error to target "
-                                      f"{self.target}: {error}, will retry again in {self.retry_wait} seconds")
+                            log.error(
+                                f"{self} Message sending error to target "
+                                f"{self.target}: {error}, will retry again in {self.retry_wait} seconds"
+                            )
 
                         self.pending_messages[seq] = start_time, curr_time, message
 
@@ -383,8 +389,9 @@ class ByteStreamer:
         secure=False,
         optional=False,
     ) -> StreamFuture:
-        tx_task = TxTask(self.cell, self.chunk_size, channel, topic, target, headers,
-                         stream, reliable, secure, optional)
+        tx_task = TxTask(
+            self.cell, self.chunk_size, channel, topic, target, headers, stream, reliable, secure, optional
+        )
         with ByteStreamer.map_lock:
             ByteStreamer.tx_task_map[tx_task.sid] = tx_task
 
