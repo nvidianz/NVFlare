@@ -121,8 +121,7 @@ class Packer:
 
         decomposed = decomposer.decompose(obj, self.manager)
         if self.manager:
-            externalizer = Externalizer(self.manager)
-            decomposed = externalizer.externalize(decomposed)
+            decomposed = self.manager.externalize(decomposed)
 
         return {FOBS_TYPE: type_name, FOBS_DATA: decomposed, FOBS_DECOMPOSER: get_class_name(type(decomposer))}
 
@@ -158,8 +157,7 @@ class Packer:
 
         data = obj[FOBS_DATA]
         if self.manager:
-            internalizer = Internalizer(self.manager)
-            data = internalizer.internalize(data)
+            data = self.manager.internalize(data)
 
         decomposer = _decomposers[type_name]
         return decomposer.recompose(data, self.manager)
