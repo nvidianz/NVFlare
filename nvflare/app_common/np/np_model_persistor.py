@@ -50,7 +50,7 @@ class NPModelPersistor(ModelPersistor):
         self.model_name = model_name
 
         # This is default model that will be used if not local model is provided.
-        self.default_data = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]], dtype=np.float32)
+        self.default_data = np.ones([16384, 16384], dtype=np.float32)
 
     def load_model(self, fl_ctx: FLContext) -> ModelLearnable:
         run_dir = _get_run_dir(fl_ctx)
