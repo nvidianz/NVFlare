@@ -139,7 +139,7 @@ class BaseFedAvg(ModelController):
             return FLModel()
         self._results = []
 
-        self.fl_ctx.set_prop(AppConstants.AGGREGATION_RESULT, aggr_result, private=True, sticky=False)
+        # self.fl_ctx.set_prop(AppConstants.AGGREGATION_RESULT, aggr_result, private=True, sticky=False)
         self.event(AppEventType.AFTER_AGGREGATION)
         self.debug("End aggregation.")
 
@@ -161,7 +161,7 @@ class BaseFedAvg(ModelController):
 
         # persistor uses Learnable format to save model
         ml = make_model_learnable(weights=model.params, meta_props=model.meta)
-        self.fl_ctx.set_prop(AppConstants.GLOBAL_MODEL, ml, private=True, sticky=True)
+        # self.fl_ctx.set_prop(AppConstants.GLOBAL_MODEL, ml, private=True, sticky=True)
 
         self.event(AppEventType.AFTER_SHAREABLE_TO_LEARNABLE)
 

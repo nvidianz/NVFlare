@@ -209,7 +209,7 @@ class BaseModelController(Controller, FLComponentWrapper, ABC):
         return task
 
     def _prepare_task_data(self, client_task: ClientTask, fl_ctx: FLContext) -> None:
-        fl_ctx.set_prop(AppConstants.TRAIN_SHAREABLE, client_task.task.data, private=True, sticky=False)
+        # fl_ctx.set_prop(AppConstants.TRAIN_SHAREABLE, client_task.task.data, private=True, sticky=False)
         self.event(AppEventType.BEFORE_TRAIN_TASK)
 
     def _process_result(self, client_task: ClientTask, fl_ctx: FLContext) -> None:
@@ -235,8 +235,8 @@ class BaseModelController(Controller, FLComponentWrapper, ABC):
         else:
             self._results.append(result_model)
 
-            # Cleanup task result
-            client_task.result = None
+        # Cleanup task result
+        client_task.result = None
 
         gc.collect()
 
@@ -268,7 +268,7 @@ class BaseModelController(Controller, FLComponentWrapper, ABC):
                 )
                 return
 
-        self.fl_ctx.set_prop(AppConstants.TRAINING_RESULT, result, private=True, sticky=False)
+        # self.fl_ctx.set_prop(AppConstants.TRAINING_RESULT, result, private=True, sticky=False)
 
     @abstractmethod
     def run(self):
@@ -329,7 +329,7 @@ class BaseModelController(Controller, FLComponentWrapper, ABC):
 
         # persistor uses Learnable format to save model
         ml = make_model_learnable(weights=model.params, meta_props=model.meta)
-        self.fl_ctx.set_prop(AppConstants.GLOBAL_MODEL, ml, private=True, sticky=True)
+        # self.fl_ctx.set_prop(AppConstants.GLOBAL_MODEL, ml, private=True, sticky=True)
         self.event(AppEventType.INITIAL_MODEL_LOADED)
 
         return model
