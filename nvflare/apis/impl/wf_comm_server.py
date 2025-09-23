@@ -315,11 +315,7 @@ class WFCommServer(FLComponent, WFCommSpec):
 
             if not resend_task:
                 task.last_client_task_map[client.name] = client_task_to_send
-                # task.client_tasks.append(client_task_to_send)
-                if task.client_tasks:
-                    task.client_tasks[0] = client_task_to_send
-                else:
-                    task.client_tasks.append(client_task_to_send)
+                task.client_tasks.append(client_task_to_send)
                 self._client_task_map[client_task_to_send.id] = client_task_to_send
 
             task_data.set_header(ReservedHeaderKey.TASK_ID, client_task_to_send.id)
