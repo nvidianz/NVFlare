@@ -51,20 +51,22 @@ class TensorDecomposer(fobs.Decomposer):
 
     @staticmethod
     def _numpy_serialize(tensor: torch.Tensor) -> dict:
-        stream = BytesIO()
-        # supported ScalarType, use numpy to avoid Pickle
-        array = tensor.detach().cpu().numpy()
-        np.save(stream, array, allow_pickle=False)
+        with BytesIO() as stream:
+            # supported ScalarType, use numpy to avoid Pickle
+            array = tensor.cpu().numpy()
+            np.save(stream, array, allow_pickle=False)
+            buffer = stream.getvalue()
+
         return {
-            "buffer": stream.getvalue(),
+            "buffer": buffer,
             "dtype": str(tensor.dtype),
         }
 
     @staticmethod
     def _numpy_deserialize(data: Any) -> torch.Tensor:
-        stream = BytesIO(data)
-        array = np.load(stream, allow_pickle=False)
-        return torch.from_numpy(array)
+        with BytesIO(data) as stream:
+            array = np.load(stream, allow_pickle=False)
+            return torch.from_numpy(array)
 
     @staticmethod
     def _jit_serialize(tensor: torch.Tensor) -> dict:
