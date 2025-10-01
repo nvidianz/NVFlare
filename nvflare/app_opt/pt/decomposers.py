@@ -15,8 +15,8 @@
 from io import BytesIO
 from typing import Any
 
-import numpy as np
 import torch
+from safetensors.torch import save, load
 
 from nvflare.fuel.utils import fobs
 from nvflare.fuel.utils.fobs.datum import DatumManager
@@ -34,53 +34,54 @@ class TensorDecomposer(fobs.Decomposer):
 
     def decompose(self, target: torch.Tensor, manager: DatumManager = None) -> Any:
         if target.dtype == torch.bfloat16:
-            return self._jit_serialize(target)
+            buffer = self._jit_serialize(target)
         else:
-            return self._numpy_serialize(target)
-
-    def recompose(self, data: Any, manager: DatumManager = None) -> torch.Tensor:
-        if isinstance(data, dict):
-            if data["dtype"] == "torch.bfloat16":
-                return self._jit_deserialize(data)
-            else:
-                buf = data["buffer"]
-        else:
-            buf = data
-
-        return self._numpy_deserialize(buf)
-
-    @staticmethod
-    def _numpy_serialize(tensor: torch.Tensor) -> dict:
-        with BytesIO() as stream:
-            # supported ScalarType, use numpy to avoid Pickle
-            array = tensor.cpu().numpy()
-            np.save(stream, array, allow_pickle=False)
-            buffer = stream.getvalue()
+            buffer = self._safetensors_serialize(target)
 
         return {
             "buffer": buffer,
-            "dtype": str(tensor.dtype),
+            "dtype": str(target.dtype),
         }
 
-    @staticmethod
-    def _numpy_deserialize(data: Any) -> torch.Tensor:
-        with BytesIO(data) as stream:
-            array = np.load(stream, allow_pickle=False)
-            return torch.from_numpy(array)
+    def recompose(self, data: Any, manager: DatumManager = None) -> torch.Tensor:
+        use_jit = False
+        if isinstance(data, dict):
+            if data["dtype"] == "torch.bfloat16":
+                user_jit = True
+            buf = data["buffer"]
+        else:
+            buf = data
+
+        if use_jit:
+            tensor = self._jit_deserialize(buf)
+        else:
+            tensor = self._safetensors_deserialize(buf)
+
+        return tensor
 
     @staticmethod
-    def _jit_serialize(tensor: torch.Tensor) -> dict:
+    def _safetensors_serialize(tensor: torch.Tensor) -> bytes:
+        state_dict = {"tensor": tensor}
+        return save(state_dict)
+
+    @staticmethod
+    def _safetensors_deserialize(data: Any) -> torch.Tensor:
+        state_dict = load(data)
+        if not isinstance(state_dict, dict):
+            raise ValueError(f"Invalid state_dict format: {type(state_dict)}")
+
+        return state_dict.get("tensor", None)
+
+    @staticmethod
+    def _jit_serialize(tensor: torch.Tensor) -> bytes:
         stream = BytesIO()
         # unsupported ScalarType by numpy, use torch.jit to avoid Pickle
         module = SerializationModule(tensor)
         torch.jit.save(torch.jit.script(module), stream)
-        return {
-            "buffer": stream.getvalue(),
-            "dtype": str(tensor.dtype),
-        }
+        return stream.getvalue()
 
     @staticmethod
     def _jit_deserialize(data: Any) -> torch.Tensor:
-        stream = BytesIO(data["buffer"])
+        stream = BytesIO(data)
         loaded_module = torch.jit.load(stream)
         return loaded_module.saved_tensor
