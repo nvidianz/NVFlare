@@ -14,8 +14,9 @@
 
 from unittest.mock import MagicMock, patch
 
-from nvflare.apis.client import ClientPropKey
+from nvflare.apis.client import Client, ClientPropKey
 from nvflare.apis.fl_constant import FLContextKey
+from nvflare.apis.fl_context import FLContext
 from nvflare.apis.shareable import Shareable
 from nvflare.fuel.f3.cellnet.defs import IdentityChallengeKey, MessageHeaderKey
 from nvflare.private.defs import CellMessageHeaderKeys, ClientRegSession, ClientType, InternalFLContextKey
@@ -81,3 +82,14 @@ def test_authenticated_client_sets_empty_org_when_secure_mode_is_disabled():
 
     assert client is not None
     assert client.get_prop(ClientPropKey.ORG, "") == ""
+
+
+def test_set_client_props_sets_site_config():
+    site_config = {"format_version": 1, "labels": {"region": "us-east"}}
+    fl_ctx = FLContext()
+    fl_ctx.set_prop(FLContextKey.CLIENT_SITE_CONFIG, site_config, private=True, sticky=False)
+
+    client = Client(name="site-1", token="token")
+    ClientManager._set_client_props(client, "server.site-1", fl_ctx)
+
+    assert client.get_site_config() == site_config
