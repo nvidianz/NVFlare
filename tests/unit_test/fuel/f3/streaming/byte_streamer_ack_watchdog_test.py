@@ -169,6 +169,34 @@ class TestByteStreamerAckWatchdog:
         assert task.stream_future.done()
         assert task.stream_future.exception() is None
 
+    def test_zero_window_sends_initial_frame_before_waiting_for_ack(self, monkeypatch):
+        task, cell = self._make_task(
+            monkeypatch,
+            window_size=0,
+            ack_wait=0.5,
+            ack_progress_timeout=2.0,
+            ack_progress_check_interval=0.01,
+            chunks=[b"a", b"b", b"c", b""],
+            chunk_size=1,
+        )
+        task.ack_waiter = MagicMock()
+
+        def acknowledge_initial_frame(*_args, **_kwargs):
+            assert cell.fire_and_forget.call_count == 1
+            task.offset_ack = task.offset
+            task.last_ack_progress_ts = time.monotonic()
+            return True
+
+        task.ack_waiter.wait.side_effect = acknowledge_initial_frame
+
+        task.send_loop()
+
+        first_message = cell.fire_and_forget.call_args_list[0].args[3]
+        assert first_message.get_header(StreamHeaderKey.SEQUENCE) == 0
+        assert first_message.payload == b"a"
+        task.ack_waiter.wait.assert_called_once()
+        assert task.stream_future.result() == 3
+
     def test_short_reads_are_coalesced_into_full_non_final_frames(self, monkeypatch):
         task, cell = self._make_task(
             monkeypatch,
