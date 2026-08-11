@@ -1,21 +1,23 @@
-# Collab API GPT-J 6B benchmark
+# Collab API multi-GPU language-model benchmark
 
-This benchmark recreates the three-host GPT-J full-model run with the Collab
-API: one server calls two published client methods, and each client runs local
-DDP through `torchrun`. The complete BF16 state dict is an ordinary Collab call
-argument and return value, so the run measures the Collab tensor-transfer path.
+This benchmark uses the 135M-parameter `HuggingFaceTB/SmolLM2-135M` model by
+default, so it can validate the Collab API and local multi-GPU DDP path on
+16 GB A16 clients. One server calls two published client methods, and each
+client runs local DDP through `torchrun`. The complete BF16 state dict is an
+ordinary Collab call argument and return value, so the run measures the Collab
+tensor-transfer path.
 
 ## Target topology
 
 | Role | Host | GPUs |
 | --- | --- | --- |
-| Server | `2u1g-x570-0286` | none |
-| site-1 | `a4u8g-mil-0026` | 4 x RTX 5880 Ada |
-| site-2 | `smc220-0008` | 2 x A40 |
+| Server | `a4u8g-mil-0020` | 4 x L20 (not used for training) |
+| site-1 | `ipp1-1878` | 4 x A16 |
+| site-2 | `ipp1-1895` | 4 x A16 |
 
 Install NVFlare from this checkout and the requirements on the server and both
-clients. The pinned GPT-J revision is safetensors-only; this benchmark never
-uses `torch.load` or `torch.save`.
+clients. SmolLM2 has a safetensors checkpoint; this benchmark never uses
+`torch.load` or `torch.save`.
 
 ```bash
 python -m pip install -e .
@@ -36,7 +38,14 @@ python -m dev_tools.collab.gpt_j_full_sft.job \
 ```
 
 The smoke-test defaults are one federated round and two optimizer steps. The
-published call has a 30-minute timeout because it transfers a full 11.27 GiB
-BF16 GPT-J state in each direction. `NVFLARE_METRIC` round records report
+published call has a 30-minute timeout. `NVFLARE_METRIC` round records report
 end-to-end Collab-call timing; `torchrun` timing is included in each client
 response for comparison.
+
+To reproduce the original full-model GPT-J workload on clients with at least
+45 GB per GPU, pass its safetensors revision explicitly:
+
+```bash
+--model-name EleutherAI/gpt-j-6b \\
+--revision f3f428825b6fc4c087af475ea729ac652edeee33
+```

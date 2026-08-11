@@ -23,7 +23,7 @@ def parse_args():
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--model-name", required=True)
-    parser.add_argument("--revision", required=True)
+    parser.add_argument("--revision")
     parser.add_argument("--local-steps", type=int, required=True)
     return parser.parse_args()
 
@@ -39,13 +39,16 @@ def main():
     rank = int(os.environ["RANK"])
     torch.cuda.set_device(local_rank)
     dist.init_process_group("nccl")
+    model_args = {}
+    if args.revision:
+        model_args["revision"] = args.revision
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
-        revision=args.revision,
         dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
         trust_remote_code=False,
         use_safetensors=True,
+        **model_args,
     ).to(local_rank)
     model.load_state_dict(load_file(args.input, device="cpu"))
     model.config.use_cache = False

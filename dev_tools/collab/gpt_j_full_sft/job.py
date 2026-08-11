@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""GPT-J 6B full-model federated benchmark implemented with the Collab API.
+"""Multi-GPU language-model benchmark implemented with the Collab API.
 
 The server calls ``collab.clients.train`` directly.  Each client stages the
 received safetensors state and launches a local multi-GPU ``torchrun`` worker.
@@ -28,8 +28,9 @@ from pathlib import Path
 from nvflare.collab import CollabRecipe, collab
 from nvflare.recipe import ProdEnv
 
-MODEL_NAME = "EleutherAI/gpt-j-6b"
-SAFETENSORS_REVISION = "f3f428825b6fc4c087af475ea729ac652edeee33"
+SMOKE_MODEL_NAME = "HuggingFaceTB/SmolLM2-135M"
+GPT_J_MODEL_NAME = "EleutherAI/gpt-j-6b"
+GPT_J_SAFETENSORS_REVISION = "f3f428825b6fc4c087af475ea729ac652edeee33"
 
 
 def _state_dict(model):
@@ -39,13 +40,16 @@ def _state_dict(model):
 def _load_initial_state(model_name, revision):
     from transformers import AutoModelForCausalLM
 
+    model_args = {}
+    if revision:
+        model_args["revision"] = revision
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        revision=revision,
         dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
         trust_remote_code=False,
         use_safetensors=True,
+        **model_args,
     )
     return _state_dict(model)
 
@@ -96,12 +100,13 @@ class GPTJClient:
             "--output",
             str(output_path),
             "--model-name",
-            collab.get_app_prop("model_name", MODEL_NAME),
-            "--revision",
-            collab.get_app_prop("revision", SAFETENSORS_REVISION),
+            collab.get_app_prop("model_name", SMOKE_MODEL_NAME),
             "--local-steps",
             str(collab.get_app_prop("local_steps", 2)),
         ]
+        revision = collab.get_app_prop("revision")
+        if revision:
+            command.extend(("--revision", revision))
         started = time.perf_counter()
         subprocess.run(command, check=True)
         elapsed = time.perf_counter() - started
@@ -114,7 +119,7 @@ class GPTJServer:
     def run(self):
         rounds = collab.get_app_prop("num_rounds", 1)
         state = _load_initial_state(
-            collab.get_app_prop("model_name", MODEL_NAME), collab.get_app_prop("revision", SAFETENSORS_REVISION)
+            collab.get_app_prop("model_name", SMOKE_MODEL_NAME), collab.get_app_prop("revision")
         )
         for round_number in range(1, rounds + 1):
             started = time.perf_counter()
@@ -170,12 +175,12 @@ def _client_props(args):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Collab API GPT-J full-model benchmark")
+    parser = argparse.ArgumentParser(description="Collab API multi-GPU language-model benchmark")
     parser.add_argument("--client-ids", nargs=2, default=["site-1", "site-2"])
     parser.add_argument("--site1-gpus", type=int, default=4)
     parser.add_argument("--site2-gpus", type=int, default=2)
-    parser.add_argument("--model-name", default=MODEL_NAME)
-    parser.add_argument("--revision", default=SAFETENSORS_REVISION)
+    parser.add_argument("--model-name", default=SMOKE_MODEL_NAME)
+    parser.add_argument("--revision", default=None)
     parser.add_argument("--num-rounds", type=int, default=1)
     parser.add_argument("--local-steps", type=int, default=2)
     parser.add_argument("--sync-task-timeout", type=int, default=1800)
