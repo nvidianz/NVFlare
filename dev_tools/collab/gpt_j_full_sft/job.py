@@ -120,12 +120,13 @@ class GPTJServer:
     @collab.main
     def run(self):
         rounds = collab.get_app_prop("num_rounds", 1)
+        call_timeout = collab.get_app_prop("call_timeout", 1800)
         state = _load_initial_state(
             collab.get_app_prop("model_name", SMOKE_MODEL_NAME), collab.get_app_prop("revision")
         )
         for round_number in range(1, rounds + 1):
             started = time.perf_counter()
-            results = collab.clients.train(state, round_number)
+            results = collab.clients(timeout=call_timeout).train(state, round_number)
             failures = dict(results.failures)
             if failures:
                 raise RuntimeError(f"Collab client failures in round {round_number}: {failures}")
@@ -155,6 +156,7 @@ def make_recipe(args):
     recipe.set_server_prop("num_rounds", args.num_rounds)
     recipe.set_server_prop("model_name", args.model_name)
     recipe.set_server_prop("revision", args.revision)
+    recipe.set_server_prop("call_timeout", args.sync_task_timeout)
     recipe.set_per_site_config(
         {
             args.client_ids[0]: {"nproc_per_node": args.site1_gpus, **_client_props(args)},
