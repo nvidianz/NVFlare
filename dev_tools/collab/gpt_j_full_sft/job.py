@@ -137,7 +137,9 @@ class GPTJServer:
             failures = dict(results.failures)
             if failures:
                 raise RuntimeError(f"Collab client failures in round {round_number}: {failures}")
-            state = _average([update for update, _metrics in results.values()])
+            # A Collab group call returns an iterable ResultQueue containing
+            # (site_name, result) entries, rather than a mapping.
+            state = _average([update for _site, (update, _metrics) in results])
             print(
                 f"NVFLARE_METRIC {{'event': 'round_complete', 'round': {round_number}, "
                 f"'seconds': {time.perf_counter() - started:.3f}, 'clients': {len(results)}}}"
