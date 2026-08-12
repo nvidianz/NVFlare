@@ -42,6 +42,11 @@ published call has a 30-minute timeout. `NVFLARE_METRIC` round records report
 end-to-end Collab-call timing; `torchrun` timing is included in each client
 response for comparison.
 
+The worker disables NCCL P2P/CUMEM by default because the A16 topology used
+for this benchmark hangs in the first DDP collective on that transport. Set
+`NCCL_P2P_DISABLE` or `NCCL_CUMEM_ENABLE` before launch to override this when
+the host's P2P path has been validated.
+
 To reproduce the original full-model GPT-J workload on clients with at least
 45 GB per GPU, pass its safetensors revision explicitly:
 

@@ -20,6 +20,7 @@ The returned state dict deliberately exercises Collab's large-tensor call path.
 """
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -110,7 +111,13 @@ class GPTJClient:
         if revision:
             command.extend(("--revision", revision))
         started = time.perf_counter()
-        subprocess.run(command, check=True)
+        # The A16 hosts expose a P2P/CUMEM path that hangs in the first DDP
+        # collective. Default to NCCL's shared-memory transport, while still
+        # allowing deployments with a validated P2P topology to override it.
+        worker_env = dict(os.environ)
+        worker_env.setdefault("NCCL_P2P_DISABLE", "1")
+        worker_env.setdefault("NCCL_CUMEM_ENABLE", "0")
+        subprocess.run(command, check=True, env=worker_env)
         elapsed = time.perf_counter() - started
         updated_state = load_file(output_path, device="cpu")
         return updated_state, {"site": site_name, "round": round_number, "torchrun_seconds": elapsed, "nproc": nproc}
