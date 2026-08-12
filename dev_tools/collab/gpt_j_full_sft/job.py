@@ -25,6 +25,8 @@ import sys
 import time
 from pathlib import Path
 
+import torch
+
 from nvflare.collab import CollabRecipe, collab
 from nvflare.recipe import ProdEnv
 
