@@ -21,7 +21,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from cvm.artifacts.oci import CVM_ARTIFACT_TYPE, DELIVERY_ARTIFACT_TYPE
 from cvm.build import config, storage, vault
@@ -202,6 +202,7 @@ class VaultInputTests(unittest.TestCase):
 
     def test_build_generates_one_distinct_identity_per_invocation(self):
         identities = []
+        release = MagicMock(name="trustee")
 
         def build(app, profiles, output, candidate, dev):
             identities.append(app["deployment_id"])
@@ -212,12 +213,15 @@ class VaultInputTests(unittest.TestCase):
             patch("cvm.build.vault.config.application", side_effect=lambda _: {"cvm_image": str(self.root)}),
             patch(
                 "cvm.build.vault.config.project",
-                return_value={"trustee": {}, "approval": {"public_keys": ["acceptance.pub"]}},
+                return_value={
+                    "key_release": {"provider": "trustee", "trustee": {}},
+                    "approval": {"public_keys": ["acceptance.pub"]},
+                },
             ),
             patch(
                 "cvm.build.vault.profile_from_image", side_effect=lambda *a, **kw: contextlib.nullcontext(self.profiles)
             ),
-            patch("cvm.build.vault.trustee_client.admin_token"),
+            patch("cvm.build.vault.key_release_provider", return_value=release),
             patch("cvm.build.vault.build_with_profile", side_effect=build),
         ):
             for output in (self.root / "first", self.root / "second"):
@@ -229,21 +233,24 @@ class VaultInputTests(unittest.TestCase):
 
     def test_project_credentials_and_acceptance_keys_are_loaded_before_retrieval(self):
         service = {"url": "https://keys.test"}
-        project_value = {"trustee": service, "approval": {"public_keys": ["/srv/project/acceptance.pub"]}}
+        settings = {"provider": "trustee", "trustee": service}
+        project_value = {"key_release": settings, "approval": {"public_keys": ["/srv/project/acceptance.pub"]}}
+        release = MagicMock(name="trustee")
         with (
             patch("cvm.build.vault.config.application", return_value={"cvm_image": self.reference}),
             patch("cvm.build.vault.config.project", return_value=project_value) as project,
-            patch("cvm.build.vault.trustee_client.admin_token") as token,
+            patch("cvm.build.vault.key_release_provider", return_value=release) as selected,
             patch("cvm.build.vault.profile_from_image", return_value=contextlib.nullcontext(self.profiles)) as retrieve,
             patch("cvm.build.vault.build_with_profile") as seal,
         ):
             vault.build("/tmp/build.yml", project_config="/srv/project/cvm_project.yml")
             project.assert_called_once_with("/tmp/build.yml", "/srv/project/cvm_project.yml")
-            self.assertEqual(seal.call_args.args[0]["trustee"], service)
+            self.assertEqual(seal.call_args.args[0]["key_release"], settings)
             self.assertEqual(seal.call_args.args[0]["approval_keys"], ["/srv/project/acceptance.pub"])
             self.assertEqual(retrieve.call_args.kwargs["trusted_keys"], ("/srv/project/acceptance.pub",))
             self.assertTrue(retrieve.call_args.kwargs["approved"])
-            token.assert_called_once_with(service)
+            selected.assert_called_once_with(settings)
+            release.preflight.assert_called_once_with()
 
         with (
             patch("cvm.build.vault.config.application", return_value={"cvm_image": self.reference}),
@@ -256,18 +263,34 @@ class VaultInputTests(unittest.TestCase):
 
     def test_expired_resource_token_fails_before_image_retrieval(self):
         project_value = {
-            "trustee": {"admin_token_file": "/srv/project/expired.jwt"},
+            "key_release": {
+                "provider": "trustee",
+                "trustee": {"admin_token_file": "/srv/project/expired.jwt"},
+            },
+            "approval": {"public_keys": ["/srv/project/acceptance.pub"]},
+        }
+        release = MagicMock(name="trustee")
+        release.preflight.side_effect = BuildError("Trustee administration token has expired")
+        with (
+            patch("cvm.build.vault.config.application", return_value={"cvm_image": self.reference}),
+            patch("cvm.build.vault.config.project", return_value=project_value),
+            patch("cvm.build.vault.key_release_provider", return_value=release),
+            patch("cvm.build.vault.profile_from_image") as retrieve,
+            self.assertRaisesRegex(ConfigurationError, "Invalid cvm_project.yml inputs"),
+        ):
+            vault.build("/tmp/build.yml")
+        retrieve.assert_not_called()
+
+    def test_unavailable_fortanix_provider_fails_before_image_retrieval(self):
+        project_value = {
+            "key_release": {"provider": "fortanix_ccm", "fortanix_ccm": {}},
             "approval": {"public_keys": ["/srv/project/acceptance.pub"]},
         }
         with (
             patch("cvm.build.vault.config.application", return_value={"cvm_image": self.reference}),
             patch("cvm.build.vault.config.project", return_value=project_value),
-            patch(
-                "cvm.build.vault.trustee_client.admin_token",
-                side_effect=BuildError("Trustee administration token has expired"),
-            ),
             patch("cvm.build.vault.profile_from_image") as retrieve,
-            self.assertRaisesRegex(ConfigurationError, "Trustee administration token has expired"),
+            self.assertRaisesRegex(ConfigurationError, "vault provisioning is unavailable"),
         ):
             vault.build("/tmp/build.yml")
         retrieve.assert_not_called()
@@ -282,7 +305,7 @@ class VaultInputTests(unittest.TestCase):
             patch("cvm.build.vault.build_with_profile") as seal,
         ):
             vault.build("vault.yml", dev=True)
-            self.assertNotIn("trustee", seal.call_args.args[0])
+            self.assertNotIn("key_release", seal.call_args.args[0])
             with self.assertRaisesRegex(BuildError, "--dev"):
                 vault.build("vault.yml", dev=True, project_config="cvm_project.yml")
             project.assert_not_called()

@@ -51,6 +51,7 @@ from .payload import GUEST_MODULES, SOURCE_DIRECTORIES, copy_modules
 from .storage import build_verity, linux_root, sidecar
 
 RUNTIME_KEYS = (
+    "key_release_provider",
     "gpu",
     "gpu_count",
     "snp_single_socket",
@@ -689,6 +690,7 @@ def build(
             "hash_offset": offset,
             "reference_value_id": reference_id,
             "attestation_policy_id": profile["attestation_policy_id"],
+            "key_release_provider": profile["key_release_provider"],
             "kbs_client_sha256": digest_file(settings["kbs_client"]),
             "sha256": {name: digest_file(directory / name) for name in artifacts},
         }

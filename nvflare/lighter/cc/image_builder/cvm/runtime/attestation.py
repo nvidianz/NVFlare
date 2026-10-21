@@ -29,6 +29,7 @@ from ..common.contracts import CPU_ATTESTATION_TIMEOUT_SECONDS, GPU_ATTESTATION_
 from ..common.errors import BuildError, StartupPhaseError, require
 from ..common.io import write_json
 from ..common.linux import memory_file, run
+from ..key_release.contracts import TRUSTEE
 from .gpu_claims import validate_submods
 
 ATTESTATION_BUDGET_SECONDS = CPU_ATTESTATION_TIMEOUT_SECONDS
@@ -161,6 +162,10 @@ def authorized_key(
     minimum_credentials_validity=None,
     maximum_credentials_age=None,
 ):
+    require(
+        config.get("key_release_provider", TRUSTEE) == TRUSTEE,
+        "The measured guest does not contain a supported key-release runtime for this provider",
+    )
     maximum = GPU_ATTESTATION_TIMEOUT_SECONDS if config.get("gpu") == "nvidia_cc" else ATTESTATION_BUDGET_SECONDS
     budget = maximum if budget is None else budget
     require(type(budget) in (int, float) and 0 < budget <= maximum, "Invalid attestation budget")

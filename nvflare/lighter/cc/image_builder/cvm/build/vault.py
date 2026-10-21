@@ -36,7 +36,7 @@ from ..common.io import is_sha256, write_json
 from ..common.linux import memory_file, protect_process, run
 from ..common.luks import scan, snapshot_header
 from ..common.validation import runtime_config
-from ..trustee import client as trustee_client
+from ..key_release.base import provider as key_release_provider
 from . import config
 from .payload import HOST_MODULES, copy_modules
 from .storage import (
@@ -503,19 +503,20 @@ def build(path, output=None, candidate=False, dev=False, plain_http=False, proje
         app = config.application(path)
         if dev:
             require_config(
-                project_config is None, "--dev must not receive --project-config or Trustee administration credentials"
+                project_config is None,
+                "--dev must not receive --project-config or key-release administration credentials",
             )
         else:
             section = "cvm_project.yml"
             project = config.project(path, project_config)
-            # Reject stale credentials before image retrieval and vault sealing.
-            # api() reads the file again at publication, so operators may still
-            # rotate a valid short-lived token while a build is running.
+            # Reject stale credentials or an unavailable provider before image
+            # retrieval and vault sealing. Provider implementations re-read
+            # credentials at publication so rotation remains possible.
             try:
-                trustee_client.admin_token(project["trustee"])
+                key_release_provider(project["key_release"]).preflight()
             except BuildError as error:
                 raise ConfigurationError(str(error)) from None
-            app["trustee"] = project["trustee"]
+            app["key_release"] = project["key_release"]
             app["approval_keys"] = project["approval"]["public_keys"]
     except ConfigurationError:
         raise
@@ -552,7 +553,12 @@ def build_with_profile(app, profiles, output=None, candidate=False, dev=False):
         )
         return build_dev(app, profiles, output)
     platforms = requested_platforms(app, profiles)
-    require("trustee" in app, "Trustee administration configuration is required")
+    require("key_release" in app, "Key-release administration configuration is required")
+    release = key_release_provider(app["key_release"])
+    require(
+        profiles["contract"].get("key_release_provider", "trustee") == release.name,
+        "cvm_project.yml key-release provider does not match the selected CVM profile",
+    )
     trusted_keys = tuple(app.get("approval_keys", ()))
     protect_process()
     output = Path(output or Path("target") / ("vault_" + app["deployment_id"])).resolve()
@@ -619,12 +625,24 @@ def build_with_profile(app, profiles, output=None, candidate=False, dev=False):
                     )
                     resource = public["resource"]
                     require(snapshot_header(device) == header, "Header changed during construction")
-                    # Native Trustee uploads may overwrite. Publish only this fresh
-                    # identity and retain uncertain outcomes for operator recovery.
-                    write_json(directory / "provisioning.json", {"resource": resource, "state": "uploading"})
-                    trustee_client.upload_resource(app["trustee"], resource, secret)
+                    # A provider may report an uncertain outcome. Publish only
+                    # this fresh identity and retain it for operator recovery.
+                    write_json(
+                        directory / "provisioning.json",
+                        {"provider": release.name, "resource": resource, "state": "uploading"},
+                    )
+                    receipt = release.create_vault_binding(
+                        resource,
+                        secret,
+                        context={
+                            "build_id": manifest["build_id"],
+                            "platform": platform,
+                            "vault_binding": digest.hex(),
+                        },
+                    )
                     activated = True
-                    write_json(directory / "provisioning.json", {"resource": resource, "state": "active"})
+                    release.verify_readback(receipt)
+                    write_json(directory / "provisioning.json", receipt)
                     published.append(public)
                     print(f"Sealed {platform}: {directory}", flush=True)
                 finally:
@@ -639,6 +657,7 @@ def build_with_profile(app, profiles, output=None, candidate=False, dev=False):
                     {
                         "deployment_id": app["deployment_id"],
                         "platform": platform,
+                        "provider": release.name,
                         "resource": resource,
                         "upload_acknowledged": activated,
                         "completed_platforms": [p["platform"] for p in published],

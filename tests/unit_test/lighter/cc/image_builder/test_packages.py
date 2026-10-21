@@ -69,10 +69,11 @@ assert not any(name in sys.modules for name in ("cvm.build", "cvm.trustee"))
         allowed = {
             "common": {"common"},
             "artifacts": {"artifacts", "common"},
-            "runtime": {"runtime", "common"},
+            "runtime": {"runtime", "key_release", "common"},
             "host": {"host", "artifacts", "common"},
             "trustee": {"trustee", "artifacts", "common"},
-            "build": {"build", "host", "artifacts", "trustee", "common"},
+            "key_release": {"key_release", "trustee", "common"},
+            "build": {"build", "host", "artifacts", "trustee", "key_release", "common"},
         }
         for path in (SOURCE / "cvm").rglob("*.py"):
             parts = path.relative_to(SOURCE).with_suffix("").parts

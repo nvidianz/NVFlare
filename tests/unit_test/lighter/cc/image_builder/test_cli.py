@@ -66,10 +66,13 @@ class CliTests(unittest.TestCase):
             project.write_text(
                 json.dumps(
                     {
-                        "trustee": {
-                            "url": "https://user:secret-token@keys.test",
-                            "ca": "ca.pem",
-                            "admin_token_file": "admin.jwt",
+                        "key_release": {
+                            "provider": "trustee",
+                            "trustee": {
+                                "url": "https://user:secret-token@keys.test",
+                                "ca": "ca.pem",
+                                "admin_token_file": "admin.jwt",
+                            },
                         },
                         "approval": {"public_keys": ["acceptance.pub"]},
                     }
@@ -350,9 +353,14 @@ class CliTests(unittest.TestCase):
             with (
                 patch.object(cli.vault.config, "application", return_value=app),
                 patch.object(
-                    cli.vault.config, "project", return_value={"trustee": {}, "approval": {"public_keys": ["k"]}}
+                    cli.vault.config,
+                    "project",
+                    return_value={
+                        "key_release": {"provider": "trustee", "trustee": {}},
+                        "approval": {"public_keys": ["k"]},
+                    },
                 ),
-                patch.object(cli.vault.trustee_client, "admin_token"),
+                patch.object(cli.vault, "key_release_provider") as release,
                 patch.object(cli.vault, "profile_from_image", return_value=contextlib.nullcontext(profiles)),
                 patch.object(cli.vault, "protect_process") as protect,
                 patch.object(cli.vault, "memory_file") as key,
@@ -360,6 +368,7 @@ class CliTests(unittest.TestCase):
                 contextlib.redirect_stderr(stderr),
                 self.assertRaises(SystemExit) as error,
             ):
+                release.return_value.preflight.return_value = None
                 cli.main(["vault", "app.yml"])
             self.assertEqual(error.exception.code, 1)
             self.assertIn("Invalid docker_archive; regenerate it with docker save", stderr.getvalue())

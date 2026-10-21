@@ -35,7 +35,9 @@ from urllib.parse import urlparse
 
 import yaml
 
+from nvflare.lighter.cc.image_builder.cvm.build import config as cvm_config
 from nvflare.lighter.cc.image_builder.cvm.common.contracts import proof_renewal_window
+from nvflare.lighter.cc.image_builder.cvm.common.errors import BuildError
 from nvflare.lighter.constants import CtxKey, ParticipantType, ProvFileName
 from nvflare.lighter.utils import verify_folder_signature
 
@@ -427,61 +429,12 @@ class VaultAdapter:
             )
             _require(path.is_file(), f"Invalid project configuration: {path}")
         path = path.resolve()
-        with path.open() as stream:
-            config = yaml.safe_load(stream)
-        _require(
-            isinstance(config, dict) and set(config) == {"trustee", "approval"},
-            "cvm_project.yml must contain only trustee and approval",
-        )
-        approval = config["approval"]
-        _require(
-            isinstance(approval, dict) and set(approval) == {"public_keys"},
-            "Project approval requires public_keys",
-        )
-        keys = approval["public_keys"]
-        _require(
-            isinstance(keys, list) and keys and all(isinstance(key, str) and key for key in keys),
-            "approval.public_keys must list at least one acceptance public key path",
-        )
-        for key in keys:
-            credential = Path(key)
-            if not credential.is_absolute():
-                credential = path.parent / credential
-            _require(credential.is_file(), f"Missing approval public key: {credential}")
-        service = config["trustee"]
-        trustee_required = {"url", "ca", "admin_token_file"}
-        _require(
-            isinstance(service, dict)
-            and trustee_required <= set(service)
-            and set(service) <= trustee_required | {"expiry_warning_seconds"},
-            "Project trustee requires url, ca and admin_token_file; expiry_warning_seconds is optional",
-        )
-        if "expiry_warning_seconds" in service:
-            warning_window = service["expiry_warning_seconds"]
-            _require(
-                type(warning_window) is int and warning_window >= 0,
-                "Project trustee expiry_warning_seconds must be a nonnegative integer",
-            )
-        endpoint = service["url"]
-        _require(isinstance(endpoint, str), "Project trustee requires an HTTPS endpoint")
-        parsed = urlparse(endpoint)
-        _require(
-            parsed.scheme == "https"
-            and parsed.hostname
-            and parsed.username is None
-            and parsed.password is None
-            and not parsed.query
-            and not parsed.fragment
-            and not any(c.isspace() for c in endpoint),
-            "Project trustee requires an HTTPS endpoint without credentials, query or fragment",
-        )
-        for key in ("ca", "admin_token_file"):
-            value = service[key]
-            _require(isinstance(value, str) and value, f"Missing project trustee {key}")
-            credential = Path(value)
-            if not credential.is_absolute():
-                credential = path.parent / credential
-            _require(credential.is_file(), f"Missing project trustee credential: {credential}")
+        try:
+            # Keep provisioning and the standalone builder on one strict schema,
+            # including provider selection and credential permissions.
+            cvm_config.project(path, path)
+        except BuildError as error:
+            raise ValueError(str(error)) from None
         return path.resolve()
 
     def _application(self, values):

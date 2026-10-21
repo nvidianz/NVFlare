@@ -31,6 +31,7 @@ GUEST_MODULES = (
     "common.gpu_claims",
     "common.validation",
     "common.services",
+    "key_release.contracts",
     "runtime.bootstrap",
     "runtime.supervisor",
     "runtime.systemd",

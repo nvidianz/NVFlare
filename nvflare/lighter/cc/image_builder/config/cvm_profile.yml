@@ -8,6 +8,10 @@ production_ready: false
 # acceptance_runner: /usr/local/bin/site_acceptance
 guest_release: '26.04'
 gpu: none
+# The provider is part of the measured Stage 1 contract. The current production
+# profile uses Trustee. See FORTANIX_CCM_DSM_PROPOSAL.md for the fail-closed
+# prerequisites that must be satisfied before selecting fortanix_ccm.
+key_release_provider: trustee
 # Keep the portable SNP policy by default. SINGLE_SOCKET is rejected by some
 # otherwise capable host stacks. Set true only in a separately versioned profile
 # qualified on every target; approved-tcb-references.json must match this value.

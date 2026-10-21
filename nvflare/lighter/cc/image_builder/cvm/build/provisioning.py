@@ -321,7 +321,7 @@ def install_files(config, payload, root=Path("/")):
         raise ValueError("Missing measured CVM runtime")
     for source in modules:
         relative = source.relative_to(package)
-        if relative.parts[0] not in ("__init__.py", "common", "runtime"):
+        if relative.parts[0] not in ("__init__.py", "common", "key_release", "runtime"):
             raise ValueError("Unexpected package in measured guest payload")
         copy_file(source, root, "/usr/lib/cvm/cvm/" + relative.as_posix(), 0o644)
     copy_file(payload / "inputs/kbs-client", root, "/usr/lib/cvm/bin/kbs-client", 0o755)

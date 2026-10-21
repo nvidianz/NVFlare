@@ -1,6 +1,6 @@
 # Fortanix CCM/DSM Provider for CVM Builder
 
-**Status:** design proposal; no implementation
+**Status:** Phase 1 provider foundation implemented; Fortanix prototype remains blocked by the service contracts in §13
 
 **Target:** NVFlare 2.9 CVM Builder
 
@@ -344,6 +344,16 @@ The Trustee and Fortanix providers may coexist across different profile versions
 - Extract current Trustee build and runtime calls behind `KeyReleaseProvider`.
 - Add strict `key_release.provider` configuration and receipts.
 - Keep behavior and tests unchanged for Trustee.
+
+Implemented in the provider-abstraction change. The measured profile now pins
+`key_release_provider`, `cvm_project.yml` strictly selects one matching
+provider, Trustee publication is behind `KeyReleaseProvider`, management
+credentials require restrictive permissions, and runtime selection has no
+fallback. The Fortanix project schema is accepted and validated, then fails
+before image retrieval or key creation. A Fortanix measured profile is also
+rejected until the released CoCo interface and vault-bound management contract
+listed in §13 exist. This is an intentional security gate, not a stub that may
+be bypassed in production.
 
 ### Phase 2: CPU-only Fortanix prototype
 

@@ -818,11 +818,12 @@ def test_bare_metal_adapter_uses_content_addressed_project_config(tmp_path):
     assert "trustee-one.example" in paths[0].read_text()
     assert "trustee-two.example" in paths[1].read_text()
     assert all(path.stat().st_mode & 0o077 == 0 for path in paths)
-    # The adapter is patched above; validate the generated file with the real project-config check.
-    real_adapter = SimpleNamespace(_path=lambda value: Path(value))
     for path in paths:
-        assert yaml.safe_load(path.read_text())["trustee"]["expiry_warning_seconds"] == 604800
-        assert VaultAdapter._project_config(real_adapter, str(path)) == path.resolve()
+        generated = yaml.safe_load(path.read_text())
+        assert generated["key_release"]["provider"] == "trustee"
+        assert set(generated["key_release"]) == {"provider", "trustee"}
+        assert generated["key_release"]["trustee"]["expiry_warning_seconds"] == 604800
+        assert "trustee" not in generated
     settings = adapter.call_args.args[0]
     assert settings["attestation_credentials"] is True
     assert settings["max_token_age_seconds"] == 100

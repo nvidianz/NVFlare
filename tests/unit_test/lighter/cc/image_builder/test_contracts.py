@@ -936,7 +936,12 @@ class ApplicationTests(unittest.TestCase):
                 self.load()
 
     def test_removed_vault_input_fields_are_rejected(self):
-        for key, value in (("deployment_id", "generic-app"), ("cvm_profile", "profile_set.json"), ("trustee", {})):
+        for key, value in (
+            ("deployment_id", "generic-app"),
+            ("cvm_profile", "profile_set.json"),
+            ("trustee", {}),
+            ("key_release", {}),
+        ):
             self.value[key] = value
             with self.subTest(key=key), self.assertRaises(BuildError):
                 self.load()
@@ -955,9 +960,12 @@ class ApplicationTests(unittest.TestCase):
     def test_runtime_has_no_build_paths_or_admin_credentials(self):
         self.value["container"]["env"] = {"APP_SECRET": "authenticated-only"}
         app = self.load()
-        app["trustee"] = {"url": "https://trustee.test", "admin_token_file": str(self.root / "token.jwt")}
+        app["key_release"] = {
+            "provider": "trustee",
+            "trustee": {"url": "https://trustee.test", "admin_token_file": str(self.root / "token.jwt")},
+        }
         projected = runtime_config(app)
-        self.assertNotIn("trustee", projected)
+        self.assertNotIn("key_release", projected)
         self.assertNotIn("docker_archive", projected)
         self.assertNotIn(str(self.root), json.dumps(projected))
         self.assertEqual(projected["container"]["env"]["APP_SECRET"], "authenticated-only")

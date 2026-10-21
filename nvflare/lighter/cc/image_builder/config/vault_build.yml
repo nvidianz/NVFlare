@@ -41,4 +41,4 @@ container:
   # host_bin: false
 services: []
 hosts_entries: {}
-# Shared trustee settings belong in the project's cvm_project.yml.
+# Shared key-release settings belong in the project's cvm_project.yml.

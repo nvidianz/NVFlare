@@ -981,7 +981,7 @@ Credential paths resolve relative to `cvm_project.yml`. Each vault build searche
 from its build YAML directory upward and uses the nearest `cvm_project.yml`.
 It does not search from the shell's working directory or merge ancestor files.
 A missing or invalid project configuration fails before CVM retrieval or key creation.
-Do not put `trustee` in `vault_build.yml`; per-build overrides are rejected.
+Do not put `key_release` or `trustee` in `vault_build.yml`; per-build overrides are rejected.
 
 For generated YAML outside the project, select the shared file explicitly:
 
@@ -993,7 +993,14 @@ sudo --preserve-env=CVM_BUILDER_PYTHON ./cvmctl vault /tmp/site-inputs/vault_bui
 Relative `--project-config` paths resolve from the shell's working directory.
 This option selects one complete project file; a missing explicit file never
 falls back to discovery. Plaintext `--dev` builds skip project discovery and
-reject `--project-config`. Candidate builds still require the project Trustee configuration.
+reject `--project-config`. Candidate builds still require the project key-release configuration.
+
+`key_release.provider` is also part of the measured CVM profile. The project and
+profile must select the same provider, and the runtime never falls back to another
+provider. Fortanix CCM/DSM configuration is documented in
+[FORTANIX_CCM_DSM_PROPOSAL.md](FORTANIX_CCM_DSM_PROPOSAL.md); selecting it currently
+fails before image retrieval because the required released CoCo interface and
+vault-bound CCM/DSM management contract are not yet available.
 
 The container can run any Linux amd64 application. Pull the selected image, print
 its immutable `image_id`, and save it as an archive:

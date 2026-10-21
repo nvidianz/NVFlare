@@ -122,14 +122,18 @@ def configuration(tmp_path):
     write_docker_archive(tmp_path / "image.tar")
     for name in ("ca.pem", "builder.jwt"):
         (tmp_path / name).write_text("input")
+    (tmp_path / "builder.jwt").chmod(0o600)
     (tmp_path / "acceptance.pub").write_bytes(ACCEPTANCE_PUBLIC_KEY)
     (tmp_path / "cvm_project.yml").write_text(
         yaml.safe_dump(
             {
-                "trustee": {
-                    "url": "https://keys.example.com:9443",
-                    "ca": "ca.pem",
-                    "admin_token_file": "builder.jwt",
+                "key_release": {
+                    "provider": "trustee",
+                    "trustee": {
+                        "url": "https://keys.example.com:9443",
+                        "ca": "ca.pem",
+                        "admin_token_file": "builder.jwt",
+                    },
                 },
                 "approval": {"public_keys": ["acceptance.pub"]},
             }
@@ -312,7 +316,7 @@ def test_inputs_match_included_builder(configuration, tmp_path, monkeypatch, reg
         assert "platforms" not in app
         assert app["image_id"] == docker_image_id(tmp_path / "image.tar")
         assert app["cvm_image"] == (REGISTRY_IMAGE if registry else str(tmp_path / "profile"))
-        assert project["trustee"]["admin_token_file"] == str(tmp_path / "builder.jwt")
+        assert project["key_release"]["trustee"]["admin_token_file"] == str(tmp_path / "builder.jwt")
         assert project["approval"]["public_keys"] == [str(tmp_path / "acceptance.pub")]
         assert app["container"]["command"][-2:] == ["--verify", "--foreground"]
         assert app["container"]["host_bin"] is True
@@ -922,7 +926,7 @@ def test_explicit_project_config_overrides_invalid_nearest(configuration, tmp_pa
     other.mkdir()
     config = yaml.safe_load((tmp_path / "cvm_project.yml").read_text())
     for key in ("ca", "admin_token_file"):
-        config["trustee"][key] = "../" + config["trustee"][key]
+        config["key_release"]["trustee"][key] = "../" + config["key_release"]["trustee"][key]
     config["approval"]["public_keys"] = ["../" + key for key in config["approval"]["public_keys"]]
     (other / "selected.yml").write_text(yaml.safe_dump(config))
     (tmp_path / "cvm_project.yml").write_text("invalid: true\n")
@@ -940,7 +944,7 @@ def test_invalid_nearest_project_does_not_fall_back(configuration, tmp_path):
     settings = copy.deepcopy(configuration["cvm_vault"])
     for key in ("cvm_builder_dir", "cvm_image", "docker_archive", "output_root"):
         settings[key] = str(tmp_path / settings[key])
-    with pytest.raises(ValueError, match="only trustee"):
+    with pytest.raises(ValueError, match="only key_release"):
         VaultAdapter(settings, nested / "project.yml", tmp_path / "workspace", prepare_project(configuration))
 
 

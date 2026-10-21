@@ -60,6 +60,24 @@ class ProfileTests(unittest.TestCase):
             ):
                 self.assertEqual(config.profile("profile.yml")["bootstrap_egress"], [port])
 
+    def test_fortanix_profile_is_gated_before_any_build_input_is_read(self):
+        for gpu, message in (
+            ("none", "released CoCo ccm_as/ccm_kbc"),
+            ("nvidia_cc", "do not yet support nvidia_cc"),
+        ):
+            with (
+                self.subTest(gpu=gpu),
+                patch.object(
+                    config,
+                    "load_yaml",
+                    return_value={"key_release_provider": "fortanix_ccm", "gpu": gpu},
+                ),
+                patch.object(config, "local_path") as resolve,
+                self.assertRaisesRegex(BuildError, message),
+            ):
+                config.profile("profile.yml")
+            resolve.assert_not_called()
+
     def test_bare_metal_profile_requires_nondefault_valid_selector_and_policy_id(self):
         for settings, message in (
             ({"attestation_policy_selector": "Bad Selector"}, "Invalid attestation_policy_selector"),

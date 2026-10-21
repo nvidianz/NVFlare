@@ -19,7 +19,9 @@ import ipaddress
 import json
 import os
 import re
+import stat
 import struct
+import uuid
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
@@ -39,6 +41,7 @@ from ..common.references import validate_references
 from ..common.services import validate_service
 from ..common.validation import DEFAULT_CAPABILITIES, DEFAULT_PIDS_LIMIT, capabilities, cidrs, ports, validate_nfs_mount
 from ..common.versions import GUEST_COMPONENTS_SELECTOR_COMMIT, NVAT_COMMIT, TRUSTEE_COMMIT
+from ..key_release.base import FORTANIX_CCM, PROVIDERS, TRUSTEE
 from .provisioning import DEFAULT_TIME_SERVERS, validate_apt_repositories, validate_time_servers
 
 PRIVATE_KEY_MARKERS = (
@@ -132,6 +135,9 @@ PROFILE_DEFAULTS = {
     "guest_release": "26.04",
     "gpu": "none",
     "gpu_count": 1,
+    # The measured guest contains exactly one release client. Runtime never
+    # falls back to a second provider.
+    "key_release_provider": TRUSTEE,
     # SINGLE_SOCKET is rejected by otherwise capable SNP host stacks such as
     # QEMU 9.2.1/kernel 6.14. Enable it only in a separately qualified profile.
     "snp_single_socket": False,
@@ -355,6 +361,41 @@ def local_path(config_path, value, directory=False):
     return str(path)
 
 
+def credential_path(config_path, value):
+    """Resolve a build-host credential and reject group/world access."""
+    path = Path(local_path(config_path, value))
+    require_config(
+        stat.S_IMODE(path.stat().st_mode) & 0o077 == 0,
+        "Key-release management credentials must not be accessible by group or other users",
+    )
+    return str(path)
+
+
+def https_endpoint(value, field):
+    require_config(isinstance(value, str) and value, f"{field} requires an HTTPS URL")
+    parsed = urlparse(value)
+    require_config(
+        parsed.scheme == "https"
+        and parsed.hostname
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+        and not any(char.isspace() for char in value),
+        f"{field} requires an HTTPS URL without credentials, query or fragment",
+    )
+    return value
+
+
+def canonical_uuid(value, field):
+    try:
+        valid = isinstance(value, str) and str(uuid.UUID(value)) == value
+    except (ValueError, AttributeError):
+        valid = False
+    require_config(valid, f"{field} must be a canonical UUID")
+    return value
+
+
 def public_sidecar(path):
     """Reject private-key material before copying an unencrypted sidecar tree."""
     root = Path(path)
@@ -508,6 +549,15 @@ def profile(path):
     require(re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,63}", value.get("profile_version", "")), "Invalid profile version")
     require(type(value.get("production_ready")) is bool, "production_ready must be boolean")
     require(value.get("gpu") in ("none", "nvidia_cc"), "gpu must be none or nvidia_cc")
+    require(value.get("key_release_provider") in PROVIDERS, "Unknown key_release_provider")
+    require(
+        value["key_release_provider"] != FORTANIX_CCM or value["gpu"] == "none",
+        "Fortanix CCM profiles do not yet support nvidia_cc GPU attestation",
+    )
+    require(
+        value["key_release_provider"] == TRUSTEE,
+        "Fortanix CCM profiles require a released CoCo ccm_as/ccm_kbc interface and supported CCM/DSM management API",
+    )
     require(
         type(value.get("gpu_count")) is int and 1 <= value["gpu_count"] <= 8,
         "gpu_count must be an integer from 1 through 8",
@@ -649,7 +699,7 @@ def cvm_image(config_path, value):
 def project(build_config, project_config=None):
     """Load shared builder settings; credentials are relative to this file.
 
-    The project names the Trustee resource endpoint and the acceptance
+    The project selects one key-release provider and the acceptance
     authorities whose signed approvals may select a production CVM bundle.
     """
     if project_config is not None:
@@ -668,37 +718,94 @@ def project(build_config, project_config=None):
         require_config(path is not None, "No cvm_project.yml found; create it or pass --project-config")
         require_config(path.is_file(), "Project configuration is not a file; check cvm_project.yml")
     value = load_yaml(path)
+    require_config(isinstance(value, dict), "Project configuration must be a mapping")
+    if set(value) == {"trustee", "approval"}:
+        # Preserve the 2.9 Trustee schema alongside explicit provider selection.
+        value["key_release"] = {"provider": TRUSTEE, TRUSTEE: value.pop("trustee")}
     require_config(
-        set(value) == {"trustee", "approval"}, "Project configuration must contain only trustee and approval"
+        set(value) == {"key_release", "approval"},
+        "Project configuration must contain only key_release and approval",
     )
-    service = value["trustee"]
-    trustee_required = {"url", "ca", "admin_token_file"}
+    release = value["key_release"]
+    require_config(isinstance(release, dict), "Project key_release must be a mapping")
+    selected = release.get("provider")
+    require_config(selected in PROVIDERS, "key_release.provider must be trustee or fortanix_ccm")
     require_config(
-        isinstance(service, dict)
-        and trustee_required <= set(service)
-        and set(service) <= trustee_required | {"expiry_warning_seconds"},
-        "Project trustee requires url, ca and admin_token_file; expiry_warning_seconds is optional",
+        set(release) == {"provider", selected},
+        "key_release must contain only provider and its selected provider block",
     )
-    warning_window = service.setdefault("expiry_warning_seconds", DEFAULT_EXPIRY_WARNING_SECONDS)
-    require_config(
-        type(warning_window) is int and warning_window >= 0,
-        "Project trustee expiry_warning_seconds must be a nonnegative integer",
-    )
-    endpoint = service["url"]
-    require_config(isinstance(endpoint, str) and endpoint, "Trustee requires an HTTPS URL")
-    parsed = urlparse(endpoint)
-    require_config(
-        parsed.scheme == "https"
-        and parsed.hostname
-        and parsed.username is None
-        and parsed.password is None
-        and not parsed.query
-        and not parsed.fragment
-        and not any(char.isspace() for char in endpoint),
-        "Trustee requires an HTTPS URL without credentials, query or fragment",
-    )
-    for key in ("ca", "admin_token_file"):
-        service[key] = local_path(path, service[key])
+    service = release[selected]
+    require_config(isinstance(service, dict), "Selected key-release provider settings must be a mapping")
+    if selected == TRUSTEE:
+        require_config(
+            {"url", "ca", "admin_token_file"} <= set(service)
+            and set(service) <= {"url", "ca", "admin_token_file", "expiry_warning_seconds"},
+            "Project Trustee settings require url, ca and admin_token_file; expiry_warning_seconds is optional",
+        )
+        warning_window = service.setdefault("expiry_warning_seconds", DEFAULT_EXPIRY_WARNING_SECONDS)
+        require_config(
+            type(warning_window) is int and warning_window >= 0,
+            "Project Trustee expiry_warning_seconds must be a nonnegative integer",
+        )
+        https_endpoint(service["url"], "Trustee")
+        service["ca"] = local_path(path, service["ca"])
+        service["admin_token_file"] = credential_path(path, service["admin_token_file"])
+    else:
+        require_config(
+            set(service) == {"ccm", "dsm", "node_agent"},
+            "Project Fortanix settings require ccm, dsm and node_agent",
+        )
+        ccm, dsm, node_agent = service["ccm"], service["dsm"], service["node_agent"]
+        require_config(
+            isinstance(ccm, dict)
+            and set(ccm)
+            == {
+                "endpoint",
+                "account_id",
+                "zone_ca",
+                "management_credential_file",
+                "workload_certificate_max_age_seconds",
+            },
+            "Fortanix ccm settings are incomplete or contain unknown fields",
+        )
+        require_config(
+            isinstance(dsm, dict)
+            and set(dsm)
+            == {
+                "endpoint",
+                "account_id",
+                "provisioning_app_id",
+                "provisioning_api_key_file",
+                "group_prefix",
+            },
+            "Fortanix dsm settings are incomplete or contain unknown fields",
+        )
+        require_config(
+            isinstance(node_agent, dict) and set(node_agent) == {"vsock_cid", "vsock_port"},
+            "Fortanix node_agent requires vsock_cid and vsock_port",
+        )
+        https_endpoint(ccm["endpoint"], "Fortanix CCM")
+        https_endpoint(dsm["endpoint"], "Fortanix DSM")
+        canonical_uuid(ccm["account_id"], "Fortanix CCM account_id")
+        canonical_uuid(dsm["account_id"], "Fortanix DSM account_id")
+        canonical_uuid(dsm["provisioning_app_id"], "Fortanix DSM provisioning_app_id")
+        require_config(
+            type(ccm["workload_certificate_max_age_seconds"]) is int
+            and 1 <= ccm["workload_certificate_max_age_seconds"] <= 300,
+            "Fortanix workload_certificate_max_age_seconds must be from 1 through 300",
+        )
+        require_config(
+            isinstance(dsm["group_prefix"], str)
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", dsm["group_prefix"]),
+            "Invalid Fortanix DSM group_prefix",
+        )
+        require_config(
+            node_agent == {"vsock_cid": 2, "vsock_port": 40},
+            "The reviewed Fortanix Node Agent transport requires vsock_cid 2 and vsock_port 40",
+        )
+        ccm["zone_ca"] = local_path(path, ccm["zone_ca"])
+        ccm["management_credential_file"] = credential_path(path, ccm["management_credential_file"])
+        dsm["provisioning_api_key_file"] = credential_path(path, dsm["provisioning_api_key_file"])
     approval = value["approval"]
     require_config(
         isinstance(approval, dict) and set(approval) == {"public_keys"},
@@ -716,7 +823,10 @@ def project(build_config, project_config=None):
 
 def application(path):
     value = load_yaml(path)
-    require_config("trustee" not in value, "Move trustee from vault_build.yml to cvm_project.yml")
+    require_config(
+        "trustee" not in value and "key_release" not in value,
+        "Move key_release from vault_build.yml to cvm_project.yml",
+    )
     allowed = {
         "cvm_image",
         "docker_archive",

@@ -47,9 +47,14 @@ class ProjectConfigTests(unittest.TestCase):
         credentials.mkdir(exist_ok=True)
         for name in ("ca", "admin_token_file"):
             (credentials / name).write_text("fixture")
+        (credentials / "admin_token_file").chmod(0o600)
         (credentials / "acceptance.pub").write_bytes(PUBLIC_KEY)
-        value = {"trustee": {"url": "https://" + hostname}, "approval": {"public_keys": ["credentials/acceptance.pub"]}}
-        value["trustee"].update({name: "credentials/" + name for name in ("ca", "admin_token_file")})
+        trustee = {"url": "https://" + hostname}
+        trustee.update({name: "credentials/" + name for name in ("ca", "admin_token_file")})
+        value = {
+            "key_release": {"provider": "trustee", "trustee": trustee},
+            "approval": {"public_keys": ["credentials/acceptance.pub"]},
+        }
         path = directory / "cvm_project.yml"
         path.write_text(yaml.safe_dump(value))
         return path
@@ -57,7 +62,7 @@ class ProjectConfigTests(unittest.TestCase):
     def test_ancestor_discovery_and_paths_use_project_not_build_directory(self):
         path = self.write_project(self.root / "project")
         value = config.project(self.build)
-        service = value["trustee"]
+        service = value["key_release"]["trustee"]
         self.assertEqual(service["admin_token_file"], str(path.parent / "credentials/admin_token_file"))
         self.assertEqual(service["url"], "https://keys.test")
         self.assertEqual(service["expiry_warning_seconds"], 7 * 86400)
@@ -79,7 +84,7 @@ class ProjectConfigTests(unittest.TestCase):
     def test_nearest_project_wins_and_invalid_nearest_does_not_fall_back(self):
         self.write_project(self.root / "project", "outer.test")
         nearest = self.write_project(self.build.parent, "nearest.test")
-        self.assertEqual(config.project(self.build)["trustee"]["url"], "https://nearest.test")
+        self.assertEqual(config.project(self.build)["key_release"]["trustee"]["url"], "https://nearest.test")
         nearest.write_text("{}\n")
         with self.assertRaises(BuildError):
             config.project(self.build)
@@ -88,8 +93,8 @@ class ProjectConfigTests(unittest.TestCase):
         self.write_project(self.build.parent, "local.test")
         path = self.write_project(self.root / "outside", "selected.test")
         value = config.project(self.build, path)
-        self.assertEqual(value["trustee"]["url"], "https://selected.test")
-        self.assertEqual(value["trustee"]["ca"], str(path.parent / "credentials/ca"))
+        self.assertEqual(value["key_release"]["trustee"]["url"], "https://selected.test")
+        self.assertEqual(value["key_release"]["trustee"]["ca"], str(path.parent / "credentials/ca"))
         with self.assertRaises(BuildError):
             config.project(self.build, self.root / "missing.yml")
 
@@ -106,18 +111,25 @@ class ProjectConfigTests(unittest.TestCase):
         path = self.write_project(self.root / "project")
         valid = yaml.safe_load(path.read_text())
         approval = valid["approval"]
+        release = valid["key_release"]
+        trustee = release["trustee"]
         for value in (
             {},
-            {"trustee": None, "approval": approval},
-            {"trustee": valid["trustee"], "approval": approval, "unknown": True},
-            {"trustee": {**valid["trustee"], "token": "unexpected"}, "approval": approval},
-            {"trustee": {"url": "https://keys.test"}, "approval": approval},
-            {"trustee": valid["trustee"]},
-            {"trustee": valid["trustee"], "approval": {}},
-            {"trustee": valid["trustee"], "approval": {"public_keys": []}},
-            {"trustee": valid["trustee"], "approval": {"public_keys": "credentials/acceptance.pub"}},
-            {"trustee": valid["trustee"], "approval": {"public_keys": ["credentials/ca"]}},
-            {"trustee": valid["trustee"], "approval": {"public_keys": ["credentials/missing.pub"]}},
+            {"key_release": None, "approval": approval},
+            {"key_release": release, "approval": approval, "unknown": True},
+            {"key_release": {**release, "other": {}}, "approval": approval},
+            {"key_release": {"provider": "unknown", "unknown": {}}, "approval": approval},
+            {
+                "key_release": {"provider": "trustee", "trustee": {**trustee, "token": "unexpected"}},
+                "approval": approval,
+            },
+            {"key_release": {"provider": "trustee", "trustee": {"url": "https://keys.test"}}, "approval": approval},
+            {"key_release": release},
+            {"key_release": release, "approval": {}},
+            {"key_release": release, "approval": {"public_keys": []}},
+            {"key_release": release, "approval": {"public_keys": "credentials/acceptance.pub"}},
+            {"key_release": release, "approval": {"public_keys": ["credentials/ca"]}},
+            {"key_release": release, "approval": {"public_keys": ["credentials/missing.pub"]}},
         ):
             path.write_text(yaml.safe_dump(value))
             with self.subTest(value=value), self.assertRaises(BuildError):
@@ -130,7 +142,10 @@ class ProjectConfigTests(unittest.TestCase):
             "https://user:pass@keys.test",
             "https://keys.test?q=1",
         ):
-            value = {"trustee": {**valid["trustee"], "url": url}, "approval": approval}
+            value = {
+                "key_release": {"provider": "trustee", "trustee": {**trustee, "url": url}},
+                "approval": approval,
+            }
             path.write_text(yaml.safe_dump(value))
             with self.subTest(url=url), self.assertRaises(BuildError):
                 config.project(self.build)
@@ -140,6 +155,64 @@ class ProjectConfigTests(unittest.TestCase):
         (path.parent / "credentials/admin_token_file").unlink()
         with self.assertRaises(BuildError):
             config.project(self.build)
-        path.write_text("trustee: {}\ntrustee: {}\n")
+        path.write_text("key_release: {}\nkey_release: {}\n")
         with self.assertRaises(BuildError):
             config.project(self.build)
+
+    def test_management_credential_permissions_are_restricted(self):
+        path = self.write_project(self.root / "project")
+        token = path.parent / "credentials/admin_token_file"
+        token.chmod(0o640)
+        with self.assertRaisesRegex(BuildError, "group or other"):
+            config.project(self.build)
+
+    def test_fortanix_schema_is_strict_and_resolves_credentials(self):
+        directory = self.root / "project"
+        credentials = directory / "credentials"
+        credentials.mkdir(parents=True)
+        for name in ("zone-ca.pem", "ccm.json", "dsm.key"):
+            (credentials / name).write_text("fixture")
+        for name in ("ccm.json", "dsm.key"):
+            (credentials / name).chmod(0o600)
+        (credentials / "acceptance.pub").write_bytes(PUBLIC_KEY)
+        value = {
+            "key_release": {
+                "provider": "fortanix_ccm",
+                "fortanix_ccm": {
+                    "ccm": {
+                        "endpoint": "https://ccm.test",
+                        "account_id": "00000000-0000-0000-0000-000000000001",
+                        "zone_ca": "credentials/zone-ca.pem",
+                        "management_credential_file": "credentials/ccm.json",
+                        "workload_certificate_max_age_seconds": 300,
+                    },
+                    "dsm": {
+                        "endpoint": "https://dsm.test",
+                        "account_id": "00000000-0000-0000-0000-000000000002",
+                        "provisioning_app_id": "00000000-0000-0000-0000-000000000003",
+                        "provisioning_api_key_file": "credentials/dsm.key",
+                        "group_prefix": "nvflare-test",
+                    },
+                    "node_agent": {"vsock_cid": 2, "vsock_port": 40},
+                },
+            },
+            "approval": {"public_keys": ["credentials/acceptance.pub"]},
+        }
+        path = directory / "cvm_project.yml"
+        path.write_text(yaml.safe_dump(value))
+        loaded = config.project(self.build)
+        settings = loaded["key_release"]["fortanix_ccm"]
+        self.assertEqual(settings["ccm"]["zone_ca"], str(credentials / "zone-ca.pem"))
+        self.assertEqual(settings["dsm"]["provisioning_api_key_file"], str(credentials / "dsm.key"))
+
+        for mutation in (
+            lambda v: v["key_release"]["fortanix_ccm"]["node_agent"].update(vsock_port=41),
+            lambda v: v["key_release"]["fortanix_ccm"]["ccm"].update(endpoint="http://ccm.test"),
+            lambda v: v["key_release"]["fortanix_ccm"]["dsm"].update(account_id="not-a-uuid"),
+            lambda v: v["key_release"]["fortanix_ccm"]["ccm"].update(workload_certificate_max_age_seconds=301),
+        ):
+            candidate = yaml.safe_load(yaml.safe_dump(value))
+            mutation(candidate)
+            path.write_text(yaml.safe_dump(candidate))
+            with self.subTest(candidate=candidate), self.assertRaises(BuildError):
+                config.project(self.build)
