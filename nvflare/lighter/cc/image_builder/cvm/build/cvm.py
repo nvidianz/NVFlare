@@ -15,6 +15,7 @@
 """Build and finalize generic CVM images on a construction host."""
 
 import contextlib
+import copy
 import hashlib
 import os
 import re
@@ -46,6 +47,7 @@ from ..common.references import (
 )
 from ..host.launcher import cbit_position, qemu_command, vfio_gpus
 from ..host.platforms import host_capabilities, select_platform
+from ..key_release.contracts import TRUSTEE
 from . import config
 from .payload import GUEST_MODULES, SOURCE_DIRECTORIES, copy_modules
 from .storage import build_verity, linux_root, sidecar
@@ -56,13 +58,11 @@ RUNTIME_KEYS = (
     "gpu_count",
     "snp_single_socket",
     "bootstrap_egress",
-    "kbs_url",
-    "token_algorithm",
-    "token_issuer",
-    "attestation_policy_selector",
     "attestation_policy_id",
     "vault_prescan",
 )
+
+TRUSTEE_RUNTIME_KEYS = ("kbs_url", "token_algorithm", "token_issuer", "attestation_policy_selector")
 
 
 # Measured guest kernel hardening. Lockdown and signature enforcement keep root
@@ -119,12 +119,18 @@ def contract(profile, source=config.SOURCE):
         "required_system_packages",
         "vault_header_bytes",
         "vault_storage_profile",
-        "trustee_commit",
         "time_servers",
         "production_ready",
     )
+    if profile["key_release_provider"] == TRUSTEE:
+        keys += TRUSTEE_RUNTIME_KEYS + ("trustee_commit",)
     value = {key: profile[key] for key in keys}
-    for key in ("base_image", "build_firmware", "kbs_cert", "as_public_key", "attestation_policy", "reference_values"):
+    hashed_inputs = ["base_image", "build_firmware", "attestation_policy", "reference_values"]
+    if profile["key_release_provider"] == TRUSTEE:
+        hashed_inputs += ["kbs_cert", "as_public_key"]
+    else:
+        value["fortanix_ccm"] = copy.deepcopy(profile["fortanix_ccm"])
+    for key in hashed_inputs:
         value[key + "_sha256"] = digest_file(profile[key])
     value["runtime_source_sha256"] = hashlib.sha256(
         b"".join(
@@ -188,12 +194,22 @@ def provisioning_payload(profile, platform, build_id, job, source, runtime):
     for name in ("services", "initramfs"):
         shutil.copytree(source / name, payload / "source" / name)
     shutil.copyfile(source / "cvm/build/provisioning.py", payload / "provision_guest.py")
-    inputs = {
-        "kbs-client": profile["platforms"][platform]["kbs_client"],
-        "kbs-ca.pem": profile["kbs_cert"],
-        "as-public.pem": profile["as_public_key"],
-        "runtime.json": runtime,
-    }
+    inputs = {"runtime.json": runtime}
+    if profile["key_release_provider"] == TRUSTEE:
+        inputs.update(
+            {
+                "kbs-client": profile["platforms"][platform]["kbs_client"],
+                "kbs-ca.pem": profile["kbs_cert"],
+                "as-public.pem": profile["as_public_key"],
+            }
+        )
+    else:
+        inputs.update(
+            {
+                "attestation-agent": profile["platforms"][platform]["attestation_agent"],
+                "cdh-oneshot": profile["platforms"][platform]["cdh_oneshot"],
+            }
+        )
     if profile["gpu"] == "nvidia_cc":
         inputs["libnvat.so.1"] = profile["gpu_attestation_library"]
         for index, repository in enumerate(profile["gpu_apt_repositories"]):
@@ -209,6 +225,7 @@ def provisioning_payload(profile, platform, build_id, job, source, runtime):
         "build_user": profile["build_user"],
         "dev_mode": profile.get("dev_mode", False),
         "gpu": profile["gpu"],
+        "key_release_provider": profile["key_release_provider"],
         "guest_release": profile["guest_release"],
         "kernel_version": profile["kernel_version"],
         "platform": platform,
@@ -342,10 +359,20 @@ def provision(ssh, profile, platform, build_id, job, *, dev=False, source=config
         profile_version=profile["profile_version"],
         build_id=build_id,
         platform=platform,
-        kbs_client="/usr/lib/cvm/bin/kbs-client",
-        kbs_cert="/etc/cvm/kbs-ca.pem",
-        as_public_key="/etc/cvm/as-public.pem",
     )
+    if profile["key_release_provider"] == TRUSTEE:
+        runtime.update({key: profile[key] for key in TRUSTEE_RUNTIME_KEYS})
+        runtime.update(
+            kbs_client="/usr/lib/cvm/bin/kbs-client",
+            kbs_cert="/etc/cvm/kbs-ca.pem",
+            as_public_key="/etc/cvm/as-public.pem",
+        )
+    else:
+        runtime.update(
+            fortanix_ccm=profile["fortanix_ccm"],
+            attestation_agent="/usr/lib/cvm/bin/attestation-agent",
+            cdh_oneshot="/usr/lib/cvm/bin/cdh-oneshot",
+        )
     if dev:
         runtime["platform"] = "none"
     if profile["gpu"] == "nvidia_cc":
@@ -626,10 +653,8 @@ def build(
         directory.mkdir(mode=0o755)
     build_id = "cvm-" + uuid.uuid4().hex
     settings = profile["platforms"][platform]
-    require(
-        dev or settings.get("kbs_client_provenance"),
-        "Production builds require kbs_client_provenance for the selected platform; record it with cvmctl provenance",
-    )
+    provenance = "kbs_client_provenance" if profile["key_release_provider"] == TRUSTEE else "guest_components_provenance"
+    require(dev or settings.get(provenance), f"Production builds require {provenance} for the selected platform")
     # Keep failed generic build logs for diagnosis; they never contain vault data.
     try:
         image = plain_build(profile, platform, build_id, job, dev=dev, source=source)
@@ -691,11 +716,19 @@ def build(
             "reference_value_id": reference_id,
             "attestation_policy_id": profile["attestation_policy_id"],
             "key_release_provider": profile["key_release_provider"],
-            "kbs_client_sha256": digest_file(settings["kbs_client"]),
             "sha256": {name: digest_file(directory / name) for name in artifacts},
         }
+        if profile["key_release_provider"] == TRUSTEE:
+            manifest["kbs_client_sha256"] = digest_file(settings["kbs_client"])
+        else:
+            manifest["fortanix_guest_sha256"] = {
+                "attestation_agent": digest_file(settings["attestation_agent"]),
+                "cdh_oneshot": digest_file(settings["cdh_oneshot"]),
+            }
         if settings.get("kbs_client_provenance"):
             manifest["kbs_client_provenance"] = read_json(settings["kbs_client_provenance"])
+        if settings.get("guest_components_provenance"):
+            manifest["fortanix_guest_components_provenance"] = read_json(settings["guest_components_provenance"])
         write_json(directory / "cvm_manifest.pending.json", manifest, mode=0o644)
         if not defer_measurements:
             finalize(directory, gpu=gpu, package=False)

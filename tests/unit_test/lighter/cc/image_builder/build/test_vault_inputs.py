@@ -276,21 +276,24 @@ class VaultInputTests(unittest.TestCase):
             patch("cvm.build.vault.config.project", return_value=project_value),
             patch("cvm.build.vault.key_release_provider", return_value=release),
             patch("cvm.build.vault.profile_from_image") as retrieve,
-            self.assertRaisesRegex(ConfigurationError, "Invalid cvm_project.yml inputs"),
+            self.assertRaisesRegex(ConfigurationError, "Trustee administration token has expired"),
         ):
             vault.build("/tmp/build.yml")
         retrieve.assert_not_called()
 
-    def test_unavailable_fortanix_provider_fails_before_image_retrieval(self):
+    def test_fortanix_preflight_failure_precedes_image_retrieval(self):
         project_value = {
-            "key_release": {"provider": "fortanix_ccm", "fortanix_ccm": {}},
+            "key_release": {"provider": "fortanix_ccm", "fortanix_ccm": {"dsm": {}}},
             "approval": {"public_keys": ["/srv/project/acceptance.pub"]},
         }
+        release = MagicMock(name="fortanix")
+        release.preflight.side_effect = BuildError("Fortanix DSM unavailable")
         with (
             patch("cvm.build.vault.config.application", return_value={"cvm_image": self.reference}),
             patch("cvm.build.vault.config.project", return_value=project_value),
+            patch("cvm.build.vault.key_release_provider", return_value=release),
             patch("cvm.build.vault.profile_from_image") as retrieve,
-            self.assertRaisesRegex(ConfigurationError, "vault provisioning is unavailable"),
+            self.assertRaisesRegex(ConfigurationError, "Fortanix DSM unavailable"),
         ):
             vault.build("/tmp/build.yml")
         retrieve.assert_not_called()

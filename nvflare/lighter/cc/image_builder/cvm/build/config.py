@@ -40,7 +40,12 @@ from ..common.io import canonical, digest_file, read_json
 from ..common.references import validate_references
 from ..common.services import validate_service
 from ..common.validation import DEFAULT_CAPABILITIES, DEFAULT_PIDS_LIMIT, capabilities, cidrs, ports, validate_nfs_mount
-from ..common.versions import GUEST_COMPONENTS_SELECTOR_COMMIT, NVAT_COMMIT, TRUSTEE_COMMIT
+from ..common.versions import (
+    FORTANIX_GUEST_COMPONENTS_COMMIT,
+    GUEST_COMPONENTS_SELECTOR_COMMIT,
+    NVAT_COMMIT,
+    TRUSTEE_COMMIT,
+)
 from ..key_release.base import FORTANIX_CCM, PROVIDERS, TRUSTEE
 from .provisioning import DEFAULT_TIME_SERVERS, validate_apt_repositories, validate_time_servers
 
@@ -55,8 +60,6 @@ PRIVATE_KEY_MARKERS = (
 
 
 NVAT_SHARED_LIBRARY = b"libnvat.so.1"
-
-
 SOURCE = Path(__file__).resolve().parents[2]
 
 
@@ -138,6 +141,7 @@ PROFILE_DEFAULTS = {
     # The measured guest contains exactly one release client. Runtime never
     # falls back to a second provider.
     "key_release_provider": TRUSTEE,
+    "fortanix_ccm": None,
     # SINGLE_SOCKET is rejected by otherwise capable SNP host stacks such as
     # QEMU 9.2.1/kernel 6.14. Enable it only in a separately qualified profile.
     "snp_single_socket": False,
@@ -519,6 +523,32 @@ def validate_kbs_client_provenance(record, kbs_client, trustee_commit):
     return value
 
 
+def validate_fortanix_provenance(record, attestation_agent, cdh_oneshot, source_commit):
+    """Bind both Fortanix guest binaries to one reviewed clean source tree."""
+    value = read_json(record)
+    require(isinstance(value, dict), "Invalid Fortanix guest-components provenance")
+    require(
+        value.get("source_clean") is True
+        and value.get("source_repository") == "https://github.com/fortanix/guest-components.git"
+        and value.get("source_commit") == source_commit,
+        "Fortanix provenance names another guest-components source",
+    )
+    require(
+        set(value.get("features", ())) >= {"ccm_as", "ccm_kbc", "bin"},
+        "Fortanix guest binaries must include ccm_as, ccm_kbc and bin features",
+    )
+    require(
+        value.get("attestation_agent_sha256") == digest_file(attestation_agent)
+        and value.get("cdh_oneshot_sha256") == digest_file(cdh_oneshot),
+        "Fortanix guest binary digest differs from its provenance",
+    )
+    require(
+        value.get("build_environment") == "ubuntu-26.04-x86_64",
+        "Build Fortanix guest components for the pinned guest environment",
+    )
+    return value
+
+
 def profile(path):
     value = load_yaml(path)
     allowed = set(PROFILE_DEFAULTS) | {
@@ -555,10 +585,6 @@ def profile(path):
         "Fortanix CCM profiles do not yet support nvidia_cc GPU attestation",
     )
     require(
-        value["key_release_provider"] == TRUSTEE,
-        "Fortanix CCM profiles require a released CoCo ccm_as/ccm_kbc interface and supported CCM/DSM management API",
-    )
-    require(
         type(value.get("gpu_count")) is int and 1 <= value["gpu_count"] <= 8,
         "gpu_count must be an integer from 1 through 8",
     )
@@ -571,23 +597,60 @@ def profile(path):
     except ValueError as error:
         raise BuildError(str(error)) from None
     require(value.get("guest_release") == "26.04", "This implementation targets an Ubuntu 26.04 guest")
-    require(re.fullmatch(r"[a-f0-9]{40}", value.get("trustee_commit", "")), "Pin trustee_commit to a full revision")
-    for key in ("attestation_policy_selector", "attestation_policy_id"):
-        require(re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", value.get(key, "")), f"Invalid {key}")
-    require(
-        value["attestation_policy_id"] != "default",
-        "Bare-metal CVMs must not replace the default CoCo attestation policy",
-    )
-    try:
-        kbs = urlparse(value.get("kbs_url", ""))
-        kbs_port = kbs.port if kbs.port is not None else 443
-    except (ValueError, TypeError):
-        raise BuildError("KBS URL contains an invalid hostname or port") from None
-    require(kbs.scheme == "https" and kbs.hostname, "KBS requires an HTTPS URL with a hostname")
-    require(not kbs.username and not kbs.password, "KBS URL must not contain credentials")
-    require(1 <= kbs_port <= 65535, "KBS URL contains an invalid port")
-    require(value.get("token_algorithm") in ("RS256", "ES256", "EdDSA"), "Pin the AS token algorithm")
-    require(isinstance(value.get("token_issuer"), str) and value["token_issuer"], "Pin the AS token issuer")
+    if value["key_release_provider"] == TRUSTEE:
+        require(re.fullmatch(r"[a-f0-9]{40}", value.get("trustee_commit", "")), "Pin trustee_commit to a full revision")
+        for key in ("attestation_policy_selector", "attestation_policy_id"):
+            require(re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", value.get(key, "")), f"Invalid {key}")
+        require(
+            value["attestation_policy_id"] != "default",
+            "Bare-metal CVMs must not replace the default CoCo attestation policy",
+        )
+        try:
+            kbs = urlparse(value.get("kbs_url", ""))
+            kbs_port = kbs.port if kbs.port is not None else 443
+        except (ValueError, TypeError):
+            raise BuildError("KBS URL contains an invalid hostname or port") from None
+        require(kbs.scheme == "https" and kbs.hostname, "KBS requires an HTTPS URL with a hostname")
+        require(not kbs.username and not kbs.password, "KBS URL must not contain credentials")
+        require(1 <= kbs_port <= 65535, "KBS URL contains an invalid port")
+        require(value.get("token_algorithm") in ("RS256", "ES256", "EdDSA"), "Pin the AS token algorithm")
+        require(isinstance(value.get("token_issuer"), str) and value["token_issuer"], "Pin the AS token issuer")
+        require(value.get("fortanix_ccm") is None, "Trustee profiles must not contain fortanix_ccm")
+    else:
+        fortanix = value.get("fortanix_ccm")
+        require(
+            isinstance(fortanix, dict)
+            and set(fortanix)
+            == {
+                "guest_components_commit",
+                "dsm_endpoint",
+                "dsm_account_id",
+                "dsm_group_id",
+                "dsm_app_id",
+                "ccm_appconfig_id",
+                "ccm_domain_names",
+            },
+            "Fortanix profiles require the exact fortanix_ccm runtime settings",
+        )
+        require(
+            fortanix["guest_components_commit"] == FORTANIX_GUEST_COMPONENTS_COMMIT,
+            "Use the reviewed Fortanix guest-components revision",
+        )
+        https_endpoint(fortanix["dsm_endpoint"], "Fortanix DSM")
+        fortanix["dsm_endpoint"] = fortanix["dsm_endpoint"].rstrip("/")
+        for key in ("dsm_account_id", "dsm_group_id", "dsm_app_id"):
+            canonical_uuid(fortanix[key], "Fortanix " + key)
+        require(re.fullmatch(r"[0-9a-f]{32}", fortanix["ccm_appconfig_id"]), "Invalid Fortanix ccm_appconfig_id")
+        domains = fortanix["ccm_domain_names"]
+        require(
+            isinstance(domains, list)
+            and domains
+            and len(domains) == len(set(domains))
+            and all(
+                isinstance(domain, str) and re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,252}", domain) for domain in domains
+            ),
+            "Invalid Fortanix CCM certificate domain names",
+        )
     # Reject unfilled documentation placeholders such as <exact-version>.
     for key in ("kernel_version", "python_version", "docker_version", "containerd_version", "cryptsetup_version"):
         require(isinstance(value.get(key), str) and value[key] and "<" not in value[key], f"Pin {key}")
@@ -614,7 +677,8 @@ def profile(path):
         require(type(value.get(key)) is int and value[key] > 0, f"Invalid {key}")
     resolve_root_overlay_max_mib(value)
     ports(value.get("bootstrap_egress", []))
-    require(kbs_port in value["bootstrap_egress"], "bootstrap_egress must include the kbs_url HTTPS port")
+    if value["key_release_provider"] == TRUSTEE:
+        require(kbs_port in value["bootstrap_egress"], "bootstrap_egress must include the kbs_url HTTPS port")
     require(isinstance(value.get("platforms"), dict) and value["platforms"], "No platforms configured")
     for name, settings in value["platforms"].items():
         require(name in PLATFORMS and isinstance(settings, dict), "Unsupported platform")
@@ -625,13 +689,27 @@ def profile(path):
     require(enabled_platforms, "At least one platform must be enabled")
     for name in enabled_platforms:
         settings = value["platforms"][name]
-        for key in ("firmware", "kbs_client"):
-            settings[key] = local_path(path, settings.get(key))
-        validate_kbs_client_linkage(settings["kbs_client"], value["gpu"])
-        if settings.get("kbs_client_provenance") is not None:
-            settings["kbs_client_provenance"] = local_path(path, settings["kbs_client_provenance"])
-            validate_kbs_client_provenance(
-                settings["kbs_client_provenance"], settings["kbs_client"], value["trustee_commit"]
+        settings["firmware"] = local_path(path, settings.get("firmware"))
+        if value["key_release_provider"] == TRUSTEE:
+            settings["kbs_client"] = local_path(path, settings.get("kbs_client"))
+            validate_kbs_client_linkage(settings["kbs_client"], value["gpu"])
+            if settings.get("kbs_client_provenance") is not None:
+                settings["kbs_client_provenance"] = local_path(path, settings["kbs_client_provenance"])
+                validate_kbs_client_provenance(
+                    settings["kbs_client_provenance"], settings["kbs_client"], value["trustee_commit"]
+                )
+        else:
+            required = {"attestation_agent", "cdh_oneshot", "guest_components_provenance"}
+            require(
+                required <= set(settings), "Fortanix platforms require attestation_agent, cdh_oneshot and provenance"
+            )
+            for key in required:
+                settings[key] = local_path(path, settings[key])
+            validate_fortanix_provenance(
+                settings["guest_components_provenance"],
+                settings["attestation_agent"],
+                settings["cdh_oneshot"],
+                value["fortanix_ccm"]["guest_components_commit"],
             )
         require(
             not str(settings["firmware"]).endswith(".ms.fd") or settings.get("shim"),
@@ -640,7 +718,10 @@ def profile(path):
         if settings.get("shim"):
             require(name == "intel_tdx", "Shim direct boot currently requires the TDX/QEMU 10 profile")
             settings["shim"] = local_path(path, settings["shim"])
-    for key in ("base_image", "build_firmware", "kbs_cert", "as_public_key", "attestation_policy", "reference_values"):
+    common_paths = ["base_image", "build_firmware", "attestation_policy", "reference_values"]
+    if value["key_release_provider"] == TRUSTEE:
+        common_paths += ["kbs_cert", "as_public_key"]
+    for key in common_paths:
         value[key] = local_path(path, value.get(key))
     if value.get("approval_signing_key") is not None:
         value["approval_signing_key"] = local_path(path, value["approval_signing_key"])
@@ -752,59 +833,25 @@ def project(build_config, project_config=None):
         service["admin_token_file"] = credential_path(path, service["admin_token_file"])
     else:
         require_config(
-            set(service) == {"ccm", "dsm", "node_agent"},
-            "Project Fortanix settings require ccm, dsm and node_agent",
+            set(service) == {"dsm"},
+            "Project Fortanix settings require exactly the dsm provisioning block",
         )
-        ccm, dsm, node_agent = service["ccm"], service["dsm"], service["node_agent"]
-        require_config(
-            isinstance(ccm, dict)
-            and set(ccm)
-            == {
-                "endpoint",
-                "account_id",
-                "zone_ca",
-                "management_credential_file",
-                "workload_certificate_max_age_seconds",
-            },
-            "Fortanix ccm settings are incomplete or contain unknown fields",
-        )
+        dsm = service["dsm"]
         require_config(
             isinstance(dsm, dict)
             and set(dsm)
             == {
                 "endpoint",
                 "account_id",
-                "provisioning_app_id",
+                "group_id",
                 "provisioning_api_key_file",
-                "group_prefix",
             },
             "Fortanix dsm settings are incomplete or contain unknown fields",
         )
-        require_config(
-            isinstance(node_agent, dict) and set(node_agent) == {"vsock_cid", "vsock_port"},
-            "Fortanix node_agent requires vsock_cid and vsock_port",
-        )
-        https_endpoint(ccm["endpoint"], "Fortanix CCM")
         https_endpoint(dsm["endpoint"], "Fortanix DSM")
-        canonical_uuid(ccm["account_id"], "Fortanix CCM account_id")
+        dsm["endpoint"] = dsm["endpoint"].rstrip("/")
         canonical_uuid(dsm["account_id"], "Fortanix DSM account_id")
-        canonical_uuid(dsm["provisioning_app_id"], "Fortanix DSM provisioning_app_id")
-        require_config(
-            type(ccm["workload_certificate_max_age_seconds"]) is int
-            and 1 <= ccm["workload_certificate_max_age_seconds"] <= 300,
-            "Fortanix workload_certificate_max_age_seconds must be from 1 through 300",
-        )
-        require_config(
-            isinstance(dsm["group_prefix"], str)
-            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", dsm["group_prefix"]),
-            "Invalid Fortanix DSM group_prefix",
-        )
-        require_config(
-            node_agent == {"vsock_cid": 2, "vsock_port": 40},
-            "The reviewed Fortanix Node Agent transport requires vsock_cid 2 and vsock_port 40",
-        )
-        ccm["zone_ca"] = local_path(path, ccm["zone_ca"])
-        ccm["management_credential_file"] = credential_path(path, ccm["management_credential_file"])
+        canonical_uuid(dsm["group_id"], "Fortanix DSM group_id")
         dsm["provisioning_api_key_file"] = credential_path(path, dsm["provisioning_api_key_file"])
     approval = value["approval"]
     require_config(

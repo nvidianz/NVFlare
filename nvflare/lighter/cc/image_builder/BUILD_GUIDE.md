@@ -997,10 +997,14 @@ reject `--project-config`. Candidate builds still require the project key-releas
 
 `key_release.provider` is also part of the measured CVM profile. The project and
 profile must select the same provider, and the runtime never falls back to another
-provider. Fortanix CCM/DSM configuration is documented in
-[FORTANIX_CCM_DSM_PROPOSAL.md](FORTANIX_CCM_DSM_PROPOSAL.md); selecting it currently
-fails before image retrieval because the required released CoCo interface and
-vault-bound CCM/DSM management contract are not yet available.
+provider. Trustee is the default. The CPU-only Fortanix preview embeds the pinned
+CoCo/Fortanix `ccm_as` and `ccm_kbc` binaries, imports each vault secret into DSM,
+and authenticates the DSM object UUID inside the TEE-bound LUKS2 header. Start from
+[config/cvm_profile_fortanix.yml](config/cvm_profile_fortanix.yml) and
+[config/cvm_project_fortanix.yml](config/cvm_project_fortanix.yml). One-time CCM
+AppConfig, DSM runtime application/group, provisioning credential, Node Agent,
+limitations, and acceptance requirements are documented in
+[FORTANIX_CCM_DSM_PROPOSAL.md](FORTANIX_CCM_DSM_PROPOSAL.md).
 
 The container can run any Linux amd64 application. Pull the selected image, print
 its immutable `image_id`, and save it as an archive:

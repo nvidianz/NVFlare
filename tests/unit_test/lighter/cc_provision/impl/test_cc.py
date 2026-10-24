@@ -25,7 +25,7 @@ from unittest.mock import Mock, patch
 import pytest
 import yaml
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 
 from nvflare.apis.fl_context import FLContext
 from nvflare.app_opt.confidential_computing.aci_authorizer import ACI_NAMESPACE, ACIAuthorizer
@@ -769,6 +769,12 @@ def test_bare_metal_adapter_uses_content_addressed_project_config(tmp_path):
     ctx = ProvisionContext(str(tmp_path / "workspace"), project)
     for name in ("ca.pem", "admin.jwt", "approval.pub"):
         (tmp_path / name).write_text("fixture")
+    (tmp_path / "admin.jwt").chmod(0o600)
+    (tmp_path / "approval.pub").write_bytes(
+        ed25519.Ed25519PrivateKey.generate()
+        .public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+    )
     project_config = {
         "_config_path": tmp_path / "cc_project.yml",
         "approval": {"public_key_files": [str(tmp_path / "approval.pub")]},
@@ -818,12 +824,15 @@ def test_bare_metal_adapter_uses_content_addressed_project_config(tmp_path):
     assert "trustee-one.example" in paths[0].read_text()
     assert "trustee-two.example" in paths[1].read_text()
     assert all(path.stat().st_mode & 0o077 == 0 for path in paths)
+    # Check generated files against the same schema used by the real adapter.
+    real_adapter = SimpleNamespace(_path=lambda value: Path(value))
     for path in paths:
         generated = yaml.safe_load(path.read_text())
         assert generated["key_release"]["provider"] == "trustee"
         assert set(generated["key_release"]) == {"provider", "trustee"}
         assert generated["key_release"]["trustee"]["expiry_warning_seconds"] == 604800
         assert "trustee" not in generated
+        assert VaultAdapter._project_config(real_adapter, str(path)) == path.resolve()
     settings = adapter.call_args.args[0]
     assert settings["attestation_credentials"] is True
     assert settings["max_token_age_seconds"] == 100

@@ -15,15 +15,66 @@
 """Validate authenticated LUKS headers, mappings and payload reads."""
 
 import json
+import uuid
 
-from .contracts import HEADER_BYTES
+from .contracts import FORTANIX_LUKS_TOKEN_ID, FORTANIX_LUKS_TOKEN_TYPE, HEADER_BYTES
 from .errors import require
-from .linux import run
+from .linux import memory_file, run
+
+FORTANIX_CCM = "fortanix_ccm"
 
 # The unlock secret is 512 random bits, so the keyslot KDF adds no security.
 # Pin a cheap deterministic KDF: a benchmarked argon2 cost would make guest
 # unlock time and memory depend on the build host and could exhaust guest RAM.
 KEYSLOT_KDF = {"type": "pbkdf2", "hash": "sha256", "iterations": 1000}
+
+
+def key_release_token(metadata):
+    """Return the one authenticated provider token, rejecting unknown tokens."""
+    tokens = metadata.get("tokens", {})
+    require(isinstance(tokens, dict), "Invalid LUKS2 token metadata")
+    if not tokens:
+        return None
+    require(set(tokens) == {FORTANIX_LUKS_TOKEN_ID}, "Vault must contain at most one recognized key-release token")
+    token = tokens[FORTANIX_LUKS_TOKEN_ID]
+    object_id = token.get("dsm_object_id") if isinstance(token, dict) else None
+    try:
+        canonical_object_id = isinstance(object_id, str) and str(uuid.UUID(object_id)) == object_id
+    except (ValueError, AttributeError):
+        canonical_object_id = False
+    require(
+        isinstance(token, dict)
+        and set(token) == {"type", "keyslots", "schema_version", "provider", "dsm_object_id"}
+        and token.get("type") == FORTANIX_LUKS_TOKEN_TYPE
+        and token.get("keyslots") == ["0"]
+        and token.get("schema_version") == 1
+        and token.get("provider") == FORTANIX_CCM
+        and canonical_object_id,
+        "Invalid Fortanix LUKS2 key-release token",
+    )
+    return token
+
+
+def install_key_release_token(device, token):
+    """Add provider metadata before the authenticated header is frozen."""
+    require(key_release_token({"tokens": {FORTANIX_LUKS_TOKEN_ID: token}}) == token, "Invalid key-release token")
+    encoded = (json.dumps(token, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    with memory_file(encoded) as token_fd:
+        run(
+            [
+                "cryptsetup",
+                "token",
+                "import",
+                "--token-id",
+                FORTANIX_LUKS_TOKEN_ID,
+                "--json-file",
+                f"/proc/self/fd/{token_fd}",
+                device,
+            ],
+            pass_fds=(token_fd,),
+            secret=True,
+        )
+    require(key_release_token(inspect_header(device)) == token, "Fortanix token was not stored in the LUKS2 header")
 
 
 def validate_luks_metadata(metadata):
@@ -67,6 +118,7 @@ def validate_luks_metadata(metadata):
         and int(area.get("offset", 0)) + int(area.get("size", HEADER_BYTES)) <= HEADER_BYTES,
         "Keyslot is outside the frozen header",
     )
+    key_release_token(metadata)
     return segment
 
 

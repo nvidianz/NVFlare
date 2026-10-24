@@ -42,12 +42,16 @@ class _Barrier(NamedTuple):
 
 
 def record(config, identity, decision):
+    if config.get("key_release_provider") == "fortanix_ccm":
+        policy_id = config["fortanix_ccm"]["ccm_appconfig_id"]
+    else:
+        policy_id = config["attestation_policy_id"]
     return {
         "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "cvm_build_id": config["build_id"],
         "vault_id": identity.get("luks_uuid"),
         "measurement": identity.get("measurements"),
-        "policy_id": config["attestation_policy_id"],
+        "policy_id": policy_id,
         "decision": decision,
     }
 

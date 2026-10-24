@@ -247,6 +247,15 @@ paths, including the production trust identity, policy mapping, reference
 installation, deployment receipt, scoped resource token, and retirement flow.
 CVM Builder contains no Trustee server fork or service unit.
 
+The CPU-only Fortanix preview selects CCM for workload attestation and DSM for
+vault secrets. Use [config/cvm_profile_fortanix.yml](config/cvm_profile_fortanix.yml)
+and [config/cvm_project_fortanix.yml](config/cvm_project_fortanix.yml); the measured
+profile and project must select the same key-release provider. See
+[FORTANIX_CCM_DSM_PROPOSAL.md](FORTANIX_CCM_DSM_PROPOSAL.md) for its preview limits.
+After an uncertain upload, retain `build_failure.json`, `provisioning.json` and
+the encrypted image so an administrator can reconcile or revoke the recorded
+provider object. The DSM object UUID in `provisioning.json` is non-secret.
+
 A generic bundle installs references and a reusable resource rule once. Each
 application vault uploads only its new binding-addressed key. There is no
 per-vault measurement history. Native KBS uploads may replace a resource and

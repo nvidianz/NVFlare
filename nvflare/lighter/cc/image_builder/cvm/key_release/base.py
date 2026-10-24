@@ -22,7 +22,15 @@ class KeyReleaseProvider(Protocol):
     def preflight(self) -> None:
         """Validate credentials before retrieving an image or generating a key."""
 
-    def create_vault_binding(self, resource: str, secret: bytes, *, context: dict) -> dict:
+    def prepare_vault_binding(self, secret: bytes, *, context: dict) -> dict | None:
+        """Optionally publish a secret before the final LUKS header is frozen."""
+
+    def runtime_token(self, prepared: dict | None) -> dict | None:
+        """Return provider metadata to authenticate inside the LUKS2 header."""
+
+    def create_vault_binding(
+        self, resource: str, secret: bytes, *, context: dict, prepared: dict | None = None
+    ) -> dict:
         """Publish a secret and return non-secret provider receipt fields."""
 
     def revoke_vault_binding(self, receipt: dict) -> None:

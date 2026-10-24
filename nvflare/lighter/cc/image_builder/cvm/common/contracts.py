@@ -41,6 +41,13 @@ DEFAULT_EXPIRY_WARNING_SECONDS = 7 * 86400
 STORAGE_PROFILE = "luks2-xts-random-hmac-sha256-v1"
 
 
+# Fortanix DSM object selection is authenticated as part of the frozen LUKS2
+# header. Keep these storage-format constants in common so the storage package
+# does not depend on a provider implementation package.
+FORTANIX_LUKS_TOKEN_TYPE = "nvflare-fortanix-ccm"
+FORTANIX_LUKS_TOKEN_ID = "0"
+
+
 PLATFORMS = ("amd_sev_snp", "intel_tdx")
 
 

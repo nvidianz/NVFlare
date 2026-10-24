@@ -31,6 +31,15 @@ from cvm.runtime.audit import append, record
 
 
 class AuditTests(unittest.TestCase):
+    def test_fortanix_record_names_the_ccm_appconfig_policy(self):
+        config = {
+            "build_id": "bundle-1",
+            "key_release_provider": "fortanix_ccm",
+            "fortanix_ccm": {"ccm_appconfig_id": "a" * 32},
+        }
+        value = audit.record(config, {"luks_uuid": "vault-1", "measurements": {}}, "authorized")
+        self.assertEqual(value["policy_id"], "a" * 32)
+
     def test_short_writes_complete_and_no_progress_does_not_spin(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "audit.log"

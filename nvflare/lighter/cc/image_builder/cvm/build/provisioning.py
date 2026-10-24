@@ -170,6 +170,7 @@ def load_config(path):
         "gpu",
         "guest_release",
         "kernel_version",
+        "key_release_provider",
         "platform",
         "profile_version",
         "required_system_packages",
@@ -186,7 +187,11 @@ def load_config(path):
         raise ValueError("Invalid profile version")
     if value["guest_release"] != "26.04" or value["platform"] not in ("amd_sev_snp", "intel_tdx"):
         raise ValueError("Unsupported construction target")
-    if value["gpu"] not in ("none", "nvidia_cc") or type(value["dev_mode"]) is not bool:
+    if (
+        value["gpu"] not in ("none", "nvidia_cc")
+        or value["key_release_provider"] not in ("trustee", "fortanix_ccm")
+        or type(value["dev_mode"]) is not bool
+    ):
         raise ValueError("Invalid construction mode")
     if not isinstance(value["kernel_version"], str) or not re.fullmatch(r"[A-Za-z0-9.+:~_-]+", value["kernel_version"]):
         raise ValueError("Invalid kernel version")
@@ -324,13 +329,18 @@ def install_files(config, payload, root=Path("/")):
         if relative.parts[0] not in ("__init__.py", "common", "key_release", "runtime"):
             raise ValueError("Unexpected package in measured guest payload")
         copy_file(source, root, "/usr/lib/cvm/cvm/" + relative.as_posix(), 0o644)
-    copy_file(payload / "inputs/kbs-client", root, "/usr/lib/cvm/bin/kbs-client", 0o755)
-    # The application container receives the measured host /usr/bin as
-    # read-only /host/bin. Expose the same pinned client there so NVFlare can
-    # generate identity-bound Trustee peer proofs without another host service.
-    copy_file(payload / "inputs/kbs-client", root, "/usr/bin/kbs-client", 0o755)
-    for name in ("kbs-ca.pem", "as-public.pem", "runtime.json"):
-        copy_file(payload / "inputs" / name, root, "/etc/cvm/" + name, 0o644)
+    if config["key_release_provider"] == "trustee":
+        copy_file(payload / "inputs/kbs-client", root, "/usr/lib/cvm/bin/kbs-client", 0o755)
+        # The application container receives the measured host /usr/bin as
+        # read-only /host/bin. Expose the same pinned client there so NVFlare can
+        # generate identity-bound Trustee peer proofs without another host service.
+        copy_file(payload / "inputs/kbs-client", root, "/usr/bin/kbs-client", 0o755)
+        for name in ("kbs-ca.pem", "as-public.pem"):
+            copy_file(payload / "inputs" / name, root, "/etc/cvm/" + name, 0o644)
+    else:
+        copy_file(payload / "inputs/attestation-agent", root, "/usr/lib/cvm/bin/attestation-agent", 0o755)
+        copy_file(payload / "inputs/cdh-oneshot", root, "/usr/lib/cvm/bin/cdh-oneshot", 0o755)
+    copy_file(payload / "inputs/runtime.json", root, "/etc/cvm/runtime.json", 0o644)
     write_file(root, "/etc/cvm_build_id", config["build_id"] + "\n")
     write_file(root, "/etc/cvm_profile_version", config["profile_version"] + "\n")
 

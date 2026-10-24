@@ -116,6 +116,7 @@ assert not any(name in sys.modules for name in ("cvm.build", "cvm.trustee"))
                 "kbs_cert": inputs,
                 "as_public_key": inputs,
                 "gpu": "none",
+                "key_release_provider": "trustee",
                 "build_user": "ubuntu",
                 "guest_release": "26.04",
                 "kernel_version": "test-kernel",

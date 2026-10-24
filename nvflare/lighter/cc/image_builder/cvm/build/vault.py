@@ -34,9 +34,10 @@ from ..common.contracts import HEADER_BYTES, STORAGE_PROFILE, binding, resource_
 from ..common.errors import BuildError, ConfigurationError, require, require_config
 from ..common.io import is_sha256, write_json
 from ..common.linux import memory_file, protect_process, run
-from ..common.luks import scan, snapshot_header
+from ..common.luks import install_key_release_token, scan, snapshot_header
 from ..common.validation import runtime_config
 from ..key_release.base import provider as key_release_provider
+from ..key_release.contracts import FORTANIX_CCM
 from . import config
 from .payload import HOST_MODULES, copy_modules
 from .storage import (
@@ -559,6 +560,19 @@ def build_with_profile(app, profiles, output=None, candidate=False, dev=False):
         profiles["contract"].get("key_release_provider", "trustee") == release.name,
         "cvm_project.yml key-release provider does not match the selected CVM profile",
     )
+    if release.name == FORTANIX_CCM:
+        runtime = profiles["contract"].get("fortanix_ccm", {})
+        project_dsm = app["key_release"][FORTANIX_CCM]["dsm"]
+        require(
+            runtime.get("dsm_endpoint") == project_dsm["endpoint"].rstrip("/")
+            and runtime.get("dsm_account_id") == project_dsm["account_id"]
+            and runtime.get("dsm_group_id") == project_dsm["group_id"],
+            "Fortanix DSM project settings do not match the selected CVM profile",
+        )
+        require(
+            not app["container"].get("attestation_credentials"),
+            "Fortanix profiles do not yet expose application attestation credentials",
+        )
     trusted_keys = tuple(app.get("approval_keys", ()))
     protect_process()
     output = Path(output or Path("target") / ("vault_" + app["deployment_id"])).resolve()
@@ -576,6 +590,7 @@ def build_with_profile(app, profiles, output=None, candidate=False, dev=False):
             directory.mkdir(mode=0o700)
             resource = None
             activated = False
+            prepared = None
             try:
                 secret = os.urandom(64)
                 stack = source_stack if source_root is None else contextlib.ExitStack()
@@ -610,6 +625,21 @@ def build_with_profile(app, profiles, output=None, candidate=False, dev=False):
                     }
                     write_json(root / "vault_manifest.json", internal)
                     run(["sync", "-f", root])
+                    prepared = release.prepare_vault_binding(
+                        secret,
+                        context={
+                            "deployment_id": app["deployment_id"],
+                            "build_id": manifest["build_id"],
+                            "platform": platform,
+                        },
+                    )
+                    if prepared is not None:
+                        # The provider object now exists. Persist its non-secret
+                        # receipt before touching the LUKS header so an operator
+                        # can revoke it after any later failure.
+                        activated = True
+                        write_json(directory / "provisioning.json", prepared)
+                        install_key_release_token(device, release.runtime_token(prepared))
                     header = snapshot_header(device)
                     digest = binding(header)
                     # Read every authenticated sector before publishing this key.
@@ -627,10 +657,11 @@ def build_with_profile(app, profiles, output=None, candidate=False, dev=False):
                     require(snapshot_header(device) == header, "Header changed during construction")
                     # A provider may report an uncertain outcome. Publish only
                     # this fresh identity and retain it for operator recovery.
-                    write_json(
-                        directory / "provisioning.json",
-                        {"provider": release.name, "resource": resource, "state": "uploading"},
-                    )
+                    if prepared is None:
+                        write_json(
+                            directory / "provisioning.json",
+                            {"provider": release.name, "resource": resource, "state": "uploading"},
+                        )
                     receipt = release.create_vault_binding(
                         resource,
                         secret,
@@ -639,6 +670,7 @@ def build_with_profile(app, profiles, output=None, candidate=False, dev=False):
                             "platform": platform,
                             "vault_binding": digest.hex(),
                         },
+                        prepared=prepared,
                     )
                     activated = True
                     release.verify_readback(receipt)

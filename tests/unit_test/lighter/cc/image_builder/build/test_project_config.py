@@ -71,15 +71,25 @@ class ProjectConfigTests(unittest.TestCase):
     def test_expiry_warning_window_is_configurable(self):
         path = self.write_project(self.root / "project")
         value = yaml.safe_load(path.read_text())
-        value["trustee"]["expiry_warning_seconds"] = 86400
+        value["key_release"]["trustee"]["expiry_warning_seconds"] = 86400
         path.write_text(yaml.safe_dump(value))
-        self.assertEqual(config.project(self.build)["trustee"]["expiry_warning_seconds"], 86400)
+        self.assertEqual(config.project(self.build)["key_release"]["trustee"]["expiry_warning_seconds"], 86400)
 
         for invalid in (-1, 1.5, "86400", True):
-            value["trustee"]["expiry_warning_seconds"] = invalid
+            value["key_release"]["trustee"]["expiry_warning_seconds"] = invalid
             path.write_text(yaml.safe_dump(value))
             with self.subTest(invalid=invalid), self.assertRaises(BuildError):
                 config.project(self.build)
+
+    def test_legacy_trustee_schema_preserves_expiry_warning_window(self):
+        path = self.write_project(self.root / "project")
+        value = yaml.safe_load(path.read_text())
+        value["trustee"] = value.pop("key_release")["trustee"]
+        value["trustee"]["expiry_warning_seconds"] = 86400
+        path.write_text(yaml.safe_dump(value))
+        release = config.project(self.build)["key_release"]
+        self.assertEqual(release["provider"], "trustee")
+        self.assertEqual(release["trustee"]["expiry_warning_seconds"], 86400)
 
     def test_nearest_project_wins_and_invalid_nearest_does_not_fall_back(self):
         self.write_project(self.root / "project", "outer.test")
@@ -170,30 +180,19 @@ class ProjectConfigTests(unittest.TestCase):
         directory = self.root / "project"
         credentials = directory / "credentials"
         credentials.mkdir(parents=True)
-        for name in ("zone-ca.pem", "ccm.json", "dsm.key"):
-            (credentials / name).write_text("fixture")
-        for name in ("ccm.json", "dsm.key"):
-            (credentials / name).chmod(0o600)
+        (credentials / "dsm.key").write_text("fixture")
+        (credentials / "dsm.key").chmod(0o600)
         (credentials / "acceptance.pub").write_bytes(PUBLIC_KEY)
         value = {
             "key_release": {
                 "provider": "fortanix_ccm",
                 "fortanix_ccm": {
-                    "ccm": {
-                        "endpoint": "https://ccm.test",
-                        "account_id": "00000000-0000-0000-0000-000000000001",
-                        "zone_ca": "credentials/zone-ca.pem",
-                        "management_credential_file": "credentials/ccm.json",
-                        "workload_certificate_max_age_seconds": 300,
-                    },
                     "dsm": {
                         "endpoint": "https://dsm.test",
-                        "account_id": "00000000-0000-0000-0000-000000000002",
-                        "provisioning_app_id": "00000000-0000-0000-0000-000000000003",
+                        "account_id": "00000000-0000-4000-8000-000000000001",
+                        "group_id": "00000000-0000-4000-8000-000000000002",
                         "provisioning_api_key_file": "credentials/dsm.key",
-                        "group_prefix": "nvflare-test",
                     },
-                    "node_agent": {"vsock_cid": 2, "vsock_port": 40},
                 },
             },
             "approval": {"public_keys": ["credentials/acceptance.pub"]},
@@ -202,14 +201,13 @@ class ProjectConfigTests(unittest.TestCase):
         path.write_text(yaml.safe_dump(value))
         loaded = config.project(self.build)
         settings = loaded["key_release"]["fortanix_ccm"]
-        self.assertEqual(settings["ccm"]["zone_ca"], str(credentials / "zone-ca.pem"))
         self.assertEqual(settings["dsm"]["provisioning_api_key_file"], str(credentials / "dsm.key"))
 
         for mutation in (
-            lambda v: v["key_release"]["fortanix_ccm"]["node_agent"].update(vsock_port=41),
-            lambda v: v["key_release"]["fortanix_ccm"]["ccm"].update(endpoint="http://ccm.test"),
+            lambda v: v["key_release"]["fortanix_ccm"].update(ccm={}),
+            lambda v: v["key_release"]["fortanix_ccm"]["dsm"].update(endpoint="http://dsm.test"),
             lambda v: v["key_release"]["fortanix_ccm"]["dsm"].update(account_id="not-a-uuid"),
-            lambda v: v["key_release"]["fortanix_ccm"]["ccm"].update(workload_certificate_max_age_seconds=301),
+            lambda v: v["key_release"]["fortanix_ccm"]["dsm"].pop("group_id"),
         ):
             candidate = yaml.safe_load(yaml.safe_dump(value))
             mutation(candidate)

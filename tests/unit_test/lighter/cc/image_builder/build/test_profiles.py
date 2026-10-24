@@ -60,23 +60,57 @@ class ProfileTests(unittest.TestCase):
             ):
                 self.assertEqual(config.profile("profile.yml")["bootstrap_egress"], [port])
 
-    def test_fortanix_profile_is_gated_before_any_build_input_is_read(self):
-        for gpu, message in (
-            ("none", "released CoCo ccm_as/ccm_kbc"),
-            ("nvidia_cc", "do not yet support nvidia_cc"),
+    def test_fortanix_profile_requires_pinned_coco_components_and_rejects_gpu(self):
+        fortanix = {
+            "guest_components_commit": config.FORTANIX_GUEST_COMPONENTS_COMMIT,
+            "dsm_endpoint": "https://dsm.test",
+            "dsm_account_id": "00000000-0000-4000-8000-000000000001",
+            "dsm_group_id": "00000000-0000-4000-8000-000000000002",
+            "dsm_app_id": "00000000-0000-4000-8000-000000000003",
+            "ccm_appconfig_id": "a" * 32,
+            "ccm_domain_names": ["ccm.test"],
+        }
+        platform = {
+            "enabled": True,
+            "attestation_agent": "attestation-agent",
+            "cdh_oneshot": "cdh-oneshot",
+            "guest_components_provenance": "provenance.json",
+        }
+        with (
+            patch.object(
+                config,
+                "load_yaml",
+                return_value={
+                    "key_release_provider": "fortanix_ccm",
+                    "fortanix_ccm": fortanix,
+                    "platforms": {"intel_tdx": platform},
+                },
+            ),
+            patch.object(config, "local_path", side_effect=lambda path, value: value),
+            patch.object(config, "read_json", return_value={}),
+            patch.object(config, "validate_references"),
+            patch.object(config, "validate_fortanix_provenance") as provenance,
         ):
-            with (
-                self.subTest(gpu=gpu),
-                patch.object(
-                    config,
-                    "load_yaml",
-                    return_value={"key_release_provider": "fortanix_ccm", "gpu": gpu},
-                ),
-                patch.object(config, "local_path") as resolve,
-                self.assertRaisesRegex(BuildError, message),
-            ):
-                config.profile("profile.yml")
-            resolve.assert_not_called()
+            profile = config.profile("profile.yml")
+        self.assertEqual(profile["key_release_provider"], "fortanix_ccm")
+        provenance.assert_called_once_with(
+            "provenance.json",
+            "attestation-agent",
+            "cdh-oneshot",
+            config.FORTANIX_GUEST_COMPONENTS_COMMIT,
+        )
+
+        with (
+            patch.object(
+                config,
+                "load_yaml",
+                return_value={"key_release_provider": "fortanix_ccm", "gpu": "nvidia_cc"},
+            ),
+            patch.object(config, "local_path") as resolve,
+            self.assertRaisesRegex(BuildError, "do not yet support nvidia_cc"),
+        ):
+            config.profile("profile.yml")
+        resolve.assert_not_called()
 
     def test_bare_metal_profile_requires_nondefault_valid_selector_and_policy_id(self):
         for settings, message in (

@@ -726,6 +726,7 @@ class GuestProvisioningTests(unittest.TestCase):
             "gpu": "none",
             "guest_release": "26.04",
             "kernel_version": "7.0.0-31-generic",
+            "key_release_provider": "trustee",
             "platform": "intel_tdx",
             "profile_version": "cpu-2026.09",
             "required_system_packages": ["python3=3.14.3-0ubuntu2"],

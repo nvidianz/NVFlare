@@ -1,0 +1,14 @@
+# Pass this file with --project-config, or copy it to the project root as
+# cvm_project.yml. Keep the provisioning API-key file mode 0600.
+key_release:
+  provider: fortanix_ccm
+  fortanix_ccm:
+    dsm:
+      endpoint: https://sdkms.example.org
+      account_id: 00000000-0000-4000-8000-000000000001
+      group_id: 00000000-0000-4000-8000-000000000002
+      provisioning_api_key_file: ../inputs/dsm-provisioning-api-key
+
+approval:
+  public_keys:
+    - ../inputs/acceptance-signing.pub

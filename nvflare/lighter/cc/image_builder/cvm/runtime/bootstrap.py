@@ -31,7 +31,7 @@ from ..common.evidence import serial_frames
 from ..common.firewall import firewall_rules
 from ..common.io import read_json, write_json
 from ..common.linux import memory_file, protect_process, run
-from ..common.luks import inspect_header, scan, snapshot_header, validate_mapping
+from ..common.luks import inspect_header, key_release_token, scan, snapshot_header, validate_mapping
 from ..common.measurements import measurements
 from ..common.services import WRITABLE_APPLICATION_DIRS, validate_service
 from ..common.validation import DEFAULT_CAPABILITIES, DEFAULT_PIDS_LIMIT, capabilities, validate_nfs_mount
@@ -268,8 +268,9 @@ def open_vault(config, platform, device):
     # No KBS contact can precede this local hardware comparison.
     verify_local_binding(platform, digest)
     with memory_file(header, sealed=True) as frozen:
-        inspect_header(device, frozen)
-        with authorized_key(config, digest) as key:
+        metadata = inspect_header(device, frozen)
+        release_token = key_release_token(metadata)
+        with _authorized_key(config, digest, release_token) as key:
             run(
                 [
                     "cryptsetup",
@@ -298,7 +299,14 @@ def open_vault(config, platform, device):
             .strip()
         )
     validate_mapping("vault")
-    return digest, actual_uuid
+    return digest, actual_uuid, release_token
+
+
+def _authorized_key(config, digest, release_token=None, **kwargs):
+    """Preserve Trustee's two-argument call while passing Fortanix metadata."""
+    if release_token is None:
+        return authorized_key(config, digest, **kwargs)
+    return authorized_key(config, digest, release_token, **kwargs)
 
 
 def verify_payload(config):
@@ -346,7 +354,7 @@ def mount_vault(config, dev=False):
         protect_process()
         platform = guest_platform()
         require(platform == config["platform"], "Guest TEE does not match its measured root")
-        digest, actual_uuid = open_vault(config, platform, device)
+        digest, actual_uuid, release_token = open_vault(config, platform, device)
         # Type=notify, no dependency on bootstrap: wait for READY before scan.
         run(["systemctl", "start", "cvm_integrity.service"], timeout=30)
     with startup_phase("payload_authentication"):
@@ -359,6 +367,7 @@ def mount_vault(config, dev=False):
             {
                 "digest": digest.hex(),
                 "luks_uuid": actual_uuid,
+                "key_release": release_token,
                 "measurements": measurements(platform, local_report(platform)[0]),
             },
         )
@@ -380,9 +389,11 @@ def reopen():
     identity = read_json(STATE / "binding.json")
     device = disk_device("vault", wait=True)
     try:
-        digest, actual_uuid = open_vault(config, platform, device)
+        digest, actual_uuid, release_token = open_vault(config, platform, device)
         require(
-            digest.hex() == identity["digest"] and actual_uuid == identity["luks_uuid"],
+            digest.hex() == identity["digest"]
+            and actual_uuid == identity["luks_uuid"]
+            and release_token == identity.get("key_release"),
             "Vault identity changed during quarantine",
         )
         verify_payload(config)
@@ -472,13 +483,16 @@ def periodic():
     readiness(config, True)
 
 
-def refresh_application_credentials(config, digest, *, app=None):
+def refresh_application_credentials(config, digest, *, app=None, key_release=None):
     """Refresh current key authorization and any application-visible Trustee proof."""
     app = read_json("/vault/config/application.json") if app is None else app
+    if key_release is None:
+        key_release = read_json(STATE / "binding.json").get("key_release")
     if app["container"].get("attestation_credentials"):
-        with authorized_key(
+        with _authorized_key(
             config,
             digest,
+            key_release,
             credentials_path=APP_ATTESTATION_CREDENTIALS,
             credentials_state_path=STATE / "application-proof.json",
             minimum_credentials_validity=periodic_timeout(config) + PROOF_EXPIRY_MARGIN_SECONDS,
@@ -488,7 +502,7 @@ def refresh_application_credentials(config, digest, *, app=None):
     else:
         # Key authorization is still mandatory even when the workload does not
         # consume peer-proof credentials.
-        with authorized_key(config, digest):
+        with _authorized_key(config, digest, key_release):
             pass
 
 

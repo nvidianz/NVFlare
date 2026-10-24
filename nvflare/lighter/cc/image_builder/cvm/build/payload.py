@@ -32,6 +32,7 @@ GUEST_MODULES = (
     "common.validation",
     "common.services",
     "key_release.contracts",
+    "key_release.fortanix.runtime",
     "runtime.bootstrap",
     "runtime.supervisor",
     "runtime.systemd",

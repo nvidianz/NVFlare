@@ -1,0 +1,37 @@
+# CPU-only Fortanix CCM/DSM preview. Unspecified build fields inherit the pinned
+# defaults in cvm.build.config; replace every identity and input path below.
+profile_version: fortanix-cpu-2026.10-r1
+production_ready: false
+gpu: none
+key_release_provider: fortanix_ccm
+
+fortanix_ccm:
+  guest_components_commit: a77b52902554946c3cd77166483915c915465895
+  dsm_endpoint: https://sdkms.example.org
+  dsm_account_id: 00000000-0000-4000-8000-000000000001
+  dsm_group_id: 00000000-0000-4000-8000-000000000002
+  # DSM Trusted-CA application used by ccm_kbc at runtime.
+  dsm_app_id: 00000000-0000-4000-8000-000000000003
+  # Fortanix ccm_as expects the AppConfig id as 32 lowercase hex characters.
+  ccm_appconfig_id: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  ccm_domain_names:
+    - ccm.example.org
+
+platforms:
+  amd_sev_snp:
+    enabled: true
+    attester: snp
+    firmware: /usr/share/ovmf/OVMF.amdsev.fd
+    cpu_model: EPYC-v4
+    attestation_agent: ../inputs/ttrpc-aa
+    cdh_oneshot: ../inputs/cdh-oneshot
+    guest_components_provenance: ../inputs/fortanix_guest_components_build.json
+  intel_tdx:
+    enabled: true
+    attester: tdx
+    firmware: ../inputs/OVMF.inteltdx.fd
+    cpu_model: host
+    quote_generation: {type: vsock, cid: 2, port: 4050}
+    attestation_agent: ../inputs/ttrpc-aa
+    cdh_oneshot: ../inputs/cdh-oneshot
+    guest_components_provenance: ../inputs/fortanix_guest_components_build.json

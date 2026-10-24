@@ -18,7 +18,15 @@ class TrusteeKeyReleaseProvider:
     def preflight(self):
         client.admin_token(self.settings)
 
-    def create_vault_binding(self, resource, secret, *, context):
+    def prepare_vault_binding(self, secret, *, context):
+        return None
+
+    def runtime_token(self, prepared):
+        require(prepared is None, "Trustee does not use a LUKS key-release token")
+        return None
+
+    def create_vault_binding(self, resource, secret, *, context, prepared=None):
+        require(prepared is None, "Trustee does not prepare resources before binding")
         client.upload_resource(self.settings, resource, secret)
         return {
             "schema_version": 1,

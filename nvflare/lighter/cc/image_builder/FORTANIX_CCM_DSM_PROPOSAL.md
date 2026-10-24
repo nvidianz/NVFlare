@@ -1,601 +1,220 @@
 # Fortanix CCM/DSM Provider for CVM Builder
 
-**Status:** Phase 1 provider foundation implemented; the CPU-only prototype is unblocked by the controlled preview path in §13, while production remains gated on a released CoCo dependency and acceptance evidence
+**Status:** CPU-only preview implemented with the reviewed Fortanix CoCo guest-components revision; production use requires service qualification and the acceptance matrix below
 
 **Target:** NVFlare 2.9 CVM Builder
 
-**Date:** 2026-10-21
+**Updated:** 2026-10-24
 
 ## 1. Decision
 
-Add a provider interface for attestation and key release, with two implementations:
+CVM Builder supports two explicit key-release providers:
 
-- `trustee`: the existing CoCo Trustee flow.
-- `fortanix_ccm`: Fortanix Confidential Computing Manager (CCM) for attestation and Fortanix Data Security Manager (DSM) for key custody and release.
+- `trustee`: CoCo Trustee supplies attestation, policy, reference values, and key resources.
+- `fortanix_ccm`: Fortanix CCM supplies workload attestation and Fortanix DSM stores and releases the vault secret.
 
-The Fortanix implementation must use the same `ccm_as` and `ccm_kbc` integration proposed for CoCo. NVFlare should not implement its own verifier or a second Fortanix attestation protocol.
+The Fortanix path does not run Trustee. It uses Fortanix's CoCo integration at [guest-components commit `a77b529`](https://github.com/fortanix/guest-components/commit/a77b52902554946c3cd77166483915c915465895): Attestation Agent `ccm_as` obtains a short-lived CCM workload certificate, and CDH `ccm_kbc` uses that certificate to export the selected DSM `SECRET`. CVM Builder invokes the provider through `cdh-oneshot get-resource`; it does not implement a second Fortanix attestation protocol.
 
-An existing CoCo deployment and NVFlare may share the same Fortanix account, CCM service, DSM instance, Zone CA, and host Node Agents. They must use separate workload policies and least-privilege DSM authorization for each sealed NVFlare vault copy. Sharing the infrastructure does not imply sharing one broad runtime credential.
+An existing CoCo deployment and CVM Builder may use the same Fortanix account, CCM service, DSM instance, Zone CA, Node Agents, and reviewed guest-component build. Use a dedicated CCM AppConfig, DSM runtime application, DSM group, and provisioning application for each independently administered NVFlare security domain. One project may place all of its CVM vault objects in that group.
 
-Trustee remains the default until the Fortanix CoCo work is upstream, versioned, and passes the acceptance tests in this proposal. Selecting `fortanix_ccm` is explicit and fail-closed.
+Provider selection is measured into the generic CVM profile. The build project and the selected profile must name the same provider, and runtime fallback is forbidden.
 
-## 2. What the CoCo reference implements
+## 2. Why this resolves the KBS-interface gap
 
-The reference is [Fortanix guest-components commit `a77b529`](https://github.com/fortanix/guest-components/commit/a77b52902554946c3cd77166483915c915465895). It builds on the earlier `ccm_as` and `ccm_kbc` work and adds encrypted-image support:
+Fortanix agent check-in is an attestation operation, not a Trustee-compatible KBS HTTP endpoint. The implementation therefore uses the data-plane interface already supplied by the Fortanix CoCo fork:
 
-1. The Attestation Agent's `ccm_as` token provider collects SNP or TDX evidence and asks the local Fortanix Node Agent to obtain a short-lived CCM workload certificate.
-2. The certificate's private key is generated in the guest. The public key, Fortanix AppConfig ID, and available NVIDIA evidence are bound into TEE report data.
-3. CDH's `ccm_kbc` presents the workload certificate to DSM as an mTLS identity.
-4. For encrypted OCI layers, `coco_keyprovider` creates a non-exportable AES-256 KEK in DSM. DSM wraps each layer DEK, and `ccm_kbc` later asks DSM to unwrap it. The KEK never leaves DSM.
+1. The measured guest starts a private `ttrpc-aa` process configured for `ccm_as`.
+2. `ccm_as` collects SNP or TDX evidence and asks the host Node Agent and CCM for a workload certificate whose key is generated in the guest.
+3. The guest runs `cdh-oneshot get-resource --resource-uri kbs:///dsm/key/<uuid>` with `ccm_kbc` selected.
+4. `ccm_kbc` presents the CCM certificate to DSM and exports that DSM `SECRET`.
+5. CVM Builder accepts only the canonical base64 encoding of exactly 64 bytes and passes it to `cryptsetup` through a memory file.
 
-This is the right authentication architecture for NVFlare. It is not currently a released CoCo interface. The base [CCM/DSM resource-release PR #1722](https://github.com/confidential-containers/guest-components/pull/1722) and the [non-exportable KEK PR #1727](https://github.com/confidential-containers/guest-components/pull/1727) are both open as of this proposal. The latter also has unresolved upstream design discussion about provider-specific resource URIs and image annotations. NVFlare must pin an exact reviewed revision for a prototype and move to an upstream CoCo release before production support.
+`kbs:///dsm/key/<uuid>` is the CoCo resource URI understood by `ccm_kbc`; no Trustee service is contacted.
 
-The OCI-layer path is not itself the CVM vault protocol. CVM Builder releases a 64-byte LUKS secret identified by the generic CVM bundle and vault binding. The initial implementation should use CoCo's generic `get_resource` path. A later hardening step may wrap that secret with a non-exportable DSM KEK once CDH exposes a backend-neutral generic unwrap operation. NVFlare must not encode OCI annotations into the vault format or fork the CoCo image-decryption protocol.
+## 3. Trust and authorization model
 
-### 2.1 Service mapping
+The Fortanix deployment supplies two service identities:
 
-| Existing Trustee responsibility | Fortanix responsibility |
-|---|---|
-| Attestation Service verifies evidence and policy | CCM verifies evidence and AppConfig policy |
-| RVPS stores approved reference values | CCM policy/AppConfig stores or selects approved reference values |
-| KBS stores and authorizes resources | DSM stores and authorizes secrets or KEKs |
-| RCAR binds an ephemeral key to evidence | CCM binds an ephemeral certificate key to evidence |
-| EAR carries signed appraisal claims | Short-lived CCM workload certificate identifies an approved AppConfig |
-| Resource policy matches bundle and vault-binding path | CCM policy matches bundle and vault binding; DSM app/group scopes the resource |
-| `kbs-client` attests and retrieves the secret | CoCo `ccm_as` obtains the certificate; `ccm_kbc` retrieves or unwraps the secret |
+- A **runtime DSM application** authenticated through the CCM Zone CA. Its application ID is measured into the generic CVM configuration and passed to `ccm_kbc`. It may export secrets from the project's DSM group.
+- A **Stage 2 provisioning application** whose API key remains on the trusted build host. It may list, import, inspect, update, and delete `SECRET` objects in the same group. It is never copied into a CVM or delivery artifact.
 
-The last three rows require explicit NVFlare acceptance tests. A certificate that proves only the generic CVM bundle is not equivalent to the current Trustee policy because it does not isolate application vaults.
+CCM AppConfig policy admits the approved generic CVM measurements and acceptable SNP or TDX TCB. DSM group membership controls which objects that workload identity can export. Separate projects or mutually untrusted tenants require separate AppConfigs, runtime applications, DSM groups, and provisioning credentials.
 
-## 3. Required security equivalence
+### 3.1 Binding a DSM object to a vault
 
-Fortanix support is acceptable only if it preserves these existing CVM Builder properties:
+A DSM UUID supplied only through an environment variable or host command line would be replaceable by the untrusted host. Stage 2 therefore stores the UUID in a custom LUKS2 token before freezing the header:
 
-1. **Bundle approval.** A workload certificate is issued only for a measured, approved CVM bundle and acceptable platform TCB.
-2. **Vault binding.** Authorization covers the exact sealed vault copy. A CVM authorized for vault A cannot request vault B's key, even when both use the same generic CVM bundle.
-3. **Proof-key binding.** The workload certificate's public key is cryptographically bound to the TEE evidence. The private key never leaves the guest.
-4. **Freshness.** Expired or stale credentials cannot authorize unlock, recovery, or peer proof.
-5. **GPU composition.** A profile with `gpu_tee: nvidia_cc` succeeds only when the required NVIDIA evidence is present and affirmatively appraised together with the CPU evidence.
-6. **Local binding.** The guest still verifies that the LUKS header-derived binding matches SNP `HOST_DATA` or TDX `MRCONFIGID` before requesting a secret.
-7. **Credential separation.** CCM and DSM management credentials remain on the trusted build host. No API key is installed in a CVM, vault, delivery, log, or OCI artifact.
-8. **Revocation.** Revoking a vault immediately prevents new releases without changing authorization for unrelated vaults.
-9. **Fail-closed behavior.** Missing evidence, unavailable policy, unknown claims, expired certificates, unexpected redirects, or ambiguous resource mappings deny release.
-
-The AppConfig ID used by the Fortanix attestation client is included in the report-data hash. NVFlare should use that binding to select a per-vault authorization object. Depending only on an unmeasured environment variable, kernel argument, DSM key UUID, or secret UUID is not sufficient.
-
-## 4. Architecture
-
-```mermaid
-flowchart LR
-    subgraph BuildHost[Trusted build host]
-        Builder[CVM Builder]
-        Mgmt[Scoped CCM and DSM management credentials]
-    end
-
-    subgraph Host[Physical CVM host]
-        NodeAgent[Fortanix Node Agent]
-        subgraph Guest[Measured CVM]
-            Runtime[CVM runtime]
-            AA[CoCo Attestation Agent with ccm_as]
-            CDH[CoCo CDH with ccm_kbc]
-            Vault[Encrypted application vault]
-        end
-    end
-
-    CCM[Fortanix CCM]
-    DSM[Fortanix DSM]
-
-    Builder -->|register measurements and vault policy| CCM
-    Builder -->|create scoped app/group and store secret| DSM
-    Mgmt --> Builder
-    Runtime -->|request workload credential| AA
-    AA -->|evidence and CSR over vsock| NodeAgent
-    NodeAgent -->|attestation request| CCM
-    CCM -->|short-lived workload certificate| NodeAgent
-    NodeAgent --> AA
-    Runtime -->|logical resource request| CDH
-    CDH -->|mTLS with workload certificate| DSM
-    DSM -->|64-byte vault secret| CDH
-    CDH --> Runtime
-    Runtime -->|unlock after local binding check| Vault
+```json
+{
+  "type": "nvflare-fortanix-ccm",
+  "keyslots": ["0"],
+  "schema_version": 1,
+  "provider": "fortanix_ccm",
+  "dsm_object_id": "00000000-0000-4000-8000-000000000002"
+}
 ```
 
-### 4.1 Reuse with CoCo
+The existing vault binding hashes the complete logical LUKS2 header. SNP `HOST_DATA` or TDX `MRCONFIGID` carries that digest. Before any network request, the measured guest compares the attached header with the local TEE report. Changing the DSM UUID changes the header digest and fails this local check. Unknown, additional, or malformed LUKS2 tokens are rejected.
 
-Reuse these resources when CoCo and NVFlare are in the same administrative trust domain:
+The CCM identity is profile-scoped rather than vault-scoped. Vault isolation comes from all of these controls together:
 
-- Fortanix account and tenant ownership.
-- CCM and DSM service endpoints.
-- CCM Zone CA and DSM trust in that CA.
-- The Fortanix Node Agent already installed and registered on each physical host.
-- The management and audit infrastructure around the services.
-- The reviewed CoCo `ccm_as` and `ccm_kbc` guest components.
+- the DSM UUID is authenticated by the TEE-bound LUKS2 header;
+- only the measured bootstrap reads the token and requests the secret;
+- `cryptsetup` accepts the returned bytes only for that header's keyslot;
+- the application container has no Attestation Agent socket, CDH binary, TEE device, DSM credential, or vault-key file;
+- the opened volume key resides in the kernel logon keyring and is not readable by user space.
 
-Create these resources specifically for NVFlare:
+A byte-for-byte copy of an authorized vault retains the same UUID, DSM object, and authorization, matching the existing CVM copy semantics.
 
-- A CCM AppConfig/policy for each sealed vault copy, or another Fortanix policy object proven to give equivalent per-vault isolation.
-- A unique certificate subject or SAN for that binding.
-- A DSM Trusted-CA application and DSM group for that binding, unless DSM object-level policy can prove the same isolation.
-- A DSM secret or KEK and a signed binding receipt.
+## 4. One-time Fortanix deployment setup
 
-The default is one DSM group and runtime application per sealed vault copy because group membership is the clear DSM authorization boundary. An operator may use a less granular layout only after proving that one workload identity cannot export or decrypt another vault's object.
+Before building a profile, the Fortanix operator creates or selects:
 
-The trusted Stage 2 builder may use one project-scoped provisioning application to create and retire these resources. That application must not be usable by a runtime workload.
+1. A CCM AppConfig that admits the exact CPU-only SNP and/or TDX generic CVM profile and acceptable platform TCB.
+2. A DSM Trusted-CA runtime application that trusts the CCM Zone CA and is associated with that AppConfig's workload identity.
+3. A DSM group containing that runtime application.
+4. A separate DSM API-key provisioning application with the minimum object-management operations needed by Stage 2 in that group.
+5. A registered Fortanix Node Agent on every physical CVM host.
 
-## 5. Provider model
+CVM Builder does not create CCM AppConfigs, DSM applications, groups, or Node Agent registrations. Those long-lived service objects are deployment bootstrap, shared with the site's CoCo infrastructure where the same administrative trust domain permits it.
 
-Move Trustee-specific orchestration behind a backend-neutral interface. The interface should represent the security lifecycle, not the Trustee REST endpoints.
+## 5. Configuration
 
-```python
-class KeyReleaseProvider(Protocol):
-    def validate_project(self, project: dict) -> None: ...
-    def validate_profile(self, profile: dict) -> None: ...
-    def install_profile(self, approved_bundle: dict) -> ProfileReceipt: ...
-    def create_vault_binding(
-        self, profile: dict, platform: str, vault_binding: str, secret: bytes
-    ) -> VaultReceipt: ...
-    def revoke_vault_binding(self, receipt: VaultReceipt) -> None: ...
-    def render_runtime(self, profile_receipt: ProfileReceipt) -> dict: ...
-    def verify_readback(self, receipt: VaultReceipt) -> None: ...
-```
+### 5.1 Stage 1 profile
 
-`ProfileReceipt` records the immutable service identity, policy revision, accepted reference values, client component revisions, and public trust roots. `VaultReceipt` records the logical resource identity and provider-specific object IDs without exposing credentials. Both are canonical JSON. The profile receipt is signed by the existing acceptance authority. The vault receipt is signed with a project-specific, non-exportable DSM signing key whose public key is measured into the generic CVM. This lets Stage 2 create a new receipt without copying an acceptance private key onto the build host.
-
-Implementations:
-
-- `TrusteeKeyReleaseProvider` delegates to the existing `cvm.trustee` code.
-- `FortanixCcmKeyReleaseProvider` manages CCM policy/AppConfig objects and DSM resources.
-- Runtime selection uses a matching `TrusteeRuntimeProvider` or `FortanixCcmRuntimeProvider`; `bootstrap.py` retains the common local-binding, key-length, LUKS, recovery, and quarantine logic.
-
-The common runtime operation is:
-
-```python
-@contextmanager
-def authorized_secret(config, vault_binding):
-    """Yield exactly 64 bytes after fresh appraisal and scoped authorization."""
-```
-
-No provider returns a secret before the common code has verified the local vault binding.
-
-## 6. Configuration
-
-Replace the Trustee-only block in `cvm_project.yml` with an explicitly selected provider. Project configuration contains service and management settings; the application YAML continues to contain application inputs and no key-service credentials.
-
-### 6.1 Trustee
+The generic CVM profile selects Fortanix and pins the exact guest implementation and long-lived service identities:
 
 ```yaml
-key_release:
-  provider: trustee
-  trustee:
-    url: https://trustee.example.org:8443
-    ca: ./inputs/kbs-ca.pem
-    admin_token_file: ./inputs/kbs-resource-token.jwt
+key_release_provider: fortanix_ccm
+gpu: none
 
-approval:
-  public_keys:
-    - ./inputs/acceptance-signing.pub
+fortanix_ccm:
+  guest_components_commit: a77b52902554946c3cd77166483915c915465895
+  dsm_endpoint: https://sdkms.example.org
+  dsm_account_id: 00000000-0000-4000-8000-000000000001
+  dsm_group_id: 00000000-0000-4000-8000-000000000002
+  dsm_app_id: 00000000-0000-4000-8000-000000000003
+  ccm_appconfig_id: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  ccm_domain_names:
+    - ccm.example.org
+
+platforms:
+  amd_sev_snp:
+    enabled: true
+    attester: snp
+    firmware: /usr/share/ovmf/OVMF.amdsev.fd
+    cpu_model: EPYC-v4
+    attestation_agent: ../inputs/ttrpc-aa
+    cdh_oneshot: ../inputs/cdh-oneshot
+    guest_components_provenance: ../inputs/fortanix_guest_components_build.json
+  intel_tdx:
+    enabled: true
+    attester: tdx
+    firmware: ../inputs/OVMF.inteltdx.fd
+    cpu_model: host
+    quote_generation: {type: vsock, cid: 2, port: 4050}
+    attestation_agent: ../inputs/ttrpc-aa
+    cdh_oneshot: ../inputs/cdh-oneshot
+    guest_components_provenance: ../inputs/fortanix_guest_components_build.json
 ```
 
-### 6.2 Fortanix CCM/DSM
+The provenance record must identify a clean `https://github.com/fortanix/guest-components.git` checkout at the pinned commit, the `ccm_as`, `ccm_kbc`, and `bin` features, an `ubuntu-26.04-x86_64` build environment, and SHA-256 digests for both binaries. Stage 1 copies only those binaries into the measured root.
+
+Generate that record on the Ubuntu 26.04 build host after compiling the pinned checkout. The command checks the revision, clean worktree, and feature strings embedded by both binaries before hashing them:
+
+```sh
+./cvmctl fortanix-provenance \
+  /path/to/fortanix-guest-components \
+  /path/to/ttrpc-aa \
+  /path/to/cdh-oneshot \
+  inputs/fortanix_guest_components_build.json
+```
+
+Fortanix profiles currently reject `gpu: nvidia_cc`. The pinned preview collects NVIDIA evidence, but the required negative GPU appraisal and containment matrix has not been qualified. Application-visible peer attestation credentials are also rejected for this provider; CCM credentials are used only inside the measured key-release transaction.
+
+### 5.2 Stage 2 project
+
+`cvm_project.yml` contains only the DSM provisioning boundary and the normal CVM acceptance keys:
 
 ```yaml
 key_release:
   provider: fortanix_ccm
   fortanix_ccm:
-    ccm:
-      endpoint: https://ccm.example.org
-      account_id: 00000000-0000-0000-0000-000000000001
-      group_id: 00000000-0000-0000-0000-000000000005
-      application_name_prefix: nvflare-example
-      certificate_domain_suffix: cvm.example.org
-      zone_ca: ./inputs/ccm-zone-ca.pem
-      management_credential_file: ./inputs/ccm-builder-credential.json
-      workload_certificate_max_age_seconds: 300
     dsm:
-      endpoint: https://dsm.example.org
-      account_id: 00000000-0000-0000-0000-000000000002
-      provisioning_app_id: 00000000-0000-0000-0000-000000000003
-      provisioning_api_key_file: ./inputs/dsm-builder-api-key
-      group_prefix: nvflare-example
-      receipt_signing_key_id: 00000000-0000-0000-0000-000000000004
-    node_agent:
-      vsock_cid: 2
-      vsock_port: 40
+      endpoint: https://sdkms.example.org
+      account_id: 00000000-0000-4000-8000-000000000001
+      group_id: 00000000-0000-4000-8000-000000000002
+      provisioning_api_key_file: ./inputs/dsm-provisioning-api-key
 
 approval:
   public_keys:
     - ./inputs/acceptance-signing.pub
 ```
 
-The referenced Fortanix client currently uses the host CID and port 40. Configuration must reject other values until the supported client makes them configurable. The Fortanix management credential format must follow the supported management API selected for implementation. These fields make ownership and trust boundaries explicit; they do not define a new Fortanix protocol.
-
-### 6.3 Guest-component capability gate
-
-The Stage 1 profile, rather than `cvm_project.yml`, selects whether it is a
-preview or production Fortanix profile. A preview profile pins source inputs:
-
-```yaml
-fortanix_guest_components:
-  support_level: preview
-  repository: https://github.com/confidential-containers/guest-components.git
-  commit: b158fac651c9068644aaf14dde7cc46fb43ed159
-  cargo_lock_sha256: eaac5f28138727116c1f221180e8a4ece6ed0a5672e02faaeda43d3e8e230b6f
-```
+The API-key file must be inaccessible to group and other users. The project endpoint, account, and group must exactly match the measured Stage 1 profile. Configuration and credentials stay on the build host and are excluded from the OCI artifacts.
 
-The build records binary digests and provenance after compilation. A production
-profile replaces the source commit with a released artifact reference and
-digest. `support_level` is measured and cannot be promoted by editing Stage 2
-configuration. Production tooling rejects `preview`, even when all functional
-tests pass.
+## 6. Lifecycle
 
-Validation rules:
+### 6.1 Stage 1
 
-- Exactly one provider is selected.
-- All service URLs are HTTPS and contain no embedded credentials, query, or fragment.
-- All credential paths resolve relative to `cvm_project.yml`, have restrictive permissions, and are excluded from artifacts and logs.
-- `account_id`, application IDs, and AppConfig IDs are canonical UUIDs or the documented Fortanix identifier format.
-- The DSM endpoint, Zone CA, CCM application template, receipt verification key, and pinned guest-component digests are measured Stage 1 inputs.
-- Stage 2-generated AppConfig ID, SAN, vault binding, DSM object ID, and provider receipt are authenticated together.
-- `gpu_tee: nvidia_cc` derives the GPU requirement. There is no independent `gpu_required` setting that can disagree with it.
+`cvmctl build` validates the pinned source provenance, embeds `ttrpc-aa` and `cdh-oneshot`, records their hashes in the CVM manifest, and measures the Fortanix runtime settings into the shared profile contract. Trustee client binaries, Trustee CA material, and Trustee runtime endpoints are omitted.
 
-## 7. Lifecycle
+Generic bundle approval still proves that the exact root and launch artifacts passed the site's CVM acceptance process. Fortanix CCM policy installation is an operator action performed against those approved measurements.
 
-### 7.1 Stage 1: generic CVM bundle
+### 6.2 Stage 2
 
-For a Fortanix profile, Stage 1:
+For each platform copy, `cvmctl vault`:
 
-1. Pins a reviewed Fortanix/CoCo guest-components revision and records source and binary provenance.
-2. Installs only the required `ccm_as` and `ccm_kbc` features plus a supported client entry point. It does not install a DSM API key.
-3. Measures the DSM endpoint, CCM Zone CA, runtime DSM application template, Node Agent transport settings, certificate age limit, and provider receipt verification key.
-4. Validates and measures a canonical local CCM application template containing the account/group, name prefix, certificate-domain suffix, approved SNP or TDX boot measurements, and TCB requirements. Stage 2 uses this template to create the vault-specific application and build because `HOST_DATA` or `MRCONFIGID` is different for every sealed vault copy. This template is NVFlare configuration, not an assumed Fortanix service object.
-5. Fetches the public half of the DSM receipt-signing key, measures it into the generic CVM, and records its key ID and fingerprint in the signed profile receipt.
-6. Records the CCM template identity and revision in the signed profile receipt.
+1. Generates a fresh 64-byte vault secret and formats authenticated LUKS2.
+2. Imports the bytes into DSM as an enabled, exportable `SECRET` in the configured group.
+3. Writes a non-secret `prepared` receipt to `provisioning.json`.
+4. Imports the returned DSM UUID as the fixed LUKS2 token and verifies readback.
+5. Freezes the header, derives the SNP/TDX vault binding, and finishes all local validation.
+6. Updates DSM custom metadata with the final logical resource path and vault-binding digest, verifies readback, and records an `active` receipt.
+7. Packages the delivery without `provisioning.json`, the API key, or secret bytes.
 
-As with Trustee, any change to these inputs produces a new generic profile version and new measurements.
+If a failure occurs after DSM import, `provisioning.json` and `build_failure.json` retain the object UUID and group without the secret. Both `prepared` and `active` receipts can be passed to the provider's revoke operation. An ambiguous DSM mutation is never retried automatically.
 
-### 7.2 Stage 2: application vault
+### 6.3 Boot, periodic authorization, and recovery
 
-For every sealed platform copy, Stage 2:
+The guest first verifies dm-verity, the attached LUKS2 header, and the SNP `HOST_DATA` or TDX `MRCONFIGID` binding. It then starts a fresh private Attestation Agent, obtains one CCM workload certificate, and invokes `cdh-oneshot` for the authenticated DSM UUID. The agent is terminated and its temporary socket and configuration are deleted at the end of that transaction.
 
-1. Freezes the LUKS header and computes the existing `vault-binding-id`.
-2. Creates a vault-specific CCM application and build from the project template. The build allows the approved generic bundle and requires the exact SNP `HOST_DATA` or padded TDX `MRCONFIGID` value for this vault binding. A separate application prevents an AppConfig approved for one vault from being combined with another approved build.
-3. Creates a unique AppConfig and certificate SAN for the binding. The SAN's first label is `v-` followed by the lowercase, unpadded base32 encoding of the 32-byte vault binding, under the configured certificate-domain suffix. The AppConfig ID is supplied to `ccm_as`, which binds it and the ephemeral certificate key into TEE report data.
-4. Creates a DSM Trusted-CA application and isolated group authorized only for this vault's resource. The application trusts the existing CCM Zone CA and accepts only the vault-specific certificate SAN.
-5. Stores the 64-byte secret as the group's only exportable runtime object. The runtime application receives `EXPORT` for that group and no create, manage, or cross-group permission.
-6. Writes a canonical receipt containing the logical resource path, binding, AppConfig ID, certificate SAN, DSM application/group/object IDs, policy revision, and creation transaction ID. DSM signs it with the project receipt-signing key.
-7. Reads back CCM and DSM metadata, verifies the receipt signature, and activates the runtime application and secret only after required CCM approval is complete.
-8. Publishes the signed receipt with the delivery and deletes the local plaintext key.
+Every periodic authorization and CPU-only recovery attempt repeats that complete CCM/DSM transaction. No workload certificate is cached across authorization calls. A denied or unavailable CCM/DSM path follows the same quarantine, vault close, bounded recovery, and forced-poweroff behavior as Trustee.
 
-The logical identity remains:
+### 6.4 Revocation
 
-```text
-keys/<cvm-bundle-id>/<vault-binding-id>
-```
+Fence active Stage 2 writers, then delete or disable the exact DSM object recorded in `provisioning.json`. That prevents future unlocks but cannot retract a secret already released to a running CVM. Preserve deletion state across DSM backup recovery. Retiring a Fortanix generic profile additionally disables its CCM AppConfig or DSM runtime application after all associated vaults have been drained.
 
-DSM UUIDs are implementation metadata and never replace this public contract. The provider receipt maps the logical identity to DSM objects.
+## 7. Security properties and limits
 
-The delivery passes the non-secret receipt through a QEMU `fw_cfg` file named
-`opt/nvflare/key-release`. This follows Fortanix's use of `fw_cfg` for a bare-metal
-AppConfig ID while keeping all provider metadata in one authenticated object. The
-host may read or replace the receipt, but replacement cannot grant access: before
-starting `ccm_as` or `ccm_kbc`, the guest verifies the DSM signature, the profile
-and bundle IDs, the platform, and equality between the receipt's vault binding
-and the binding independently computed from the attached LUKS header. Only then
-does it render temporary `aa.toml` and `cdh.toml` files under `/run`. No receipt
-field is copied into the generic image or accepted from an unsigned environment
-variable or kernel argument.
+- No DSM management API key or CCM management credential enters the measured guest, encrypted vault, logs, or delivery.
+- The runtime uses the reviewed CoCo/Fortanix `ccm_as` and `ccm_kbc` implementation, not an NVFlare verifier or certificate protocol.
+- The DSM object UUID is authenticated by the frozen LUKS2 header and local TEE binding.
+- The returned resource must be canonical base64 for exactly 64 bytes.
+- A Fortanix profile never falls back to Trustee when CCM, the Node Agent, CDH, or DSM fails.
+- The preview depends on an unreleased Fortanix guest-components commit. Production rollout must move to a released CoCo/Fortanix interface or explicitly accept and maintain that pinned fork.
+- GPU key release and application-visible peer credentials remain unsupported for `fortanix_ccm`.
+- As with the Trustee provider, complete-disk rollback and cloning of an authorized root-and-vault pair remain outside the protection supplied by key release alone.
 
-CCM installations that require human approval use a resumable transaction. Stage
-2 first imports the secret into DSM in a disabled state, writes a non-secret
-transaction journal, and reports the pending CCM task. After an independent
-administrator approves the application and build, `cvmctl vault resume` reads
-back the approved state, enables the DSM resources, signs the receipt, and
-publishes the delivery. Repeated create or resume calls use the transaction ID as
-an idempotency label. Cleanup disables access before deleting any object. An
-explicit test-only setting may use an approval-capable service credential; it is
-not the production default.
+## 8. Acceptance matrix
 
-For a future non-exportable-KEK mode, Stage 2 asks DSM to wrap the 64-byte vault secret with a per-vault AES-256 KEK lacking `EXPORT`. The signed receipt additionally contains ciphertext, IV, tag, and KEK UUID. Runtime asks DSM to decrypt that envelope using a backend-neutral CDH operation. This mode is enabled only after that operation is available without an NVFlare-only guest-components fork.
+Before production use, run the same profile on the intended service deployment and hardware:
 
-### 7.3 Boot and unlock
+- Positive CPU-only SNP and TDX build, seal, first unlock, periodic authorization, restart, and CPU recovery.
+- Wrong header, changed DSM UUID token, wrong platform, changed root, debug-enabled TEE, unapproved measurement, and unacceptable TCB denial.
+- Expired or revoked CCM credential, disabled AppConfig, removed DSM group membership, disabled/deleted secret, wrong DSM application, and wrong DSM group denial.
+- Node Agent, CCM, DSM, and DNS timeout tests with bounded quarantine and no fallback.
+- Cross-vault attempts in both directions within the shared project group.
+- Stage 2 DSM failure before import, after import, after LUKS token installation, and after metadata activation; verify retained receipts and idempotent cleanup.
+- Confirmation that OCI artifacts and logs contain no API key, workload private key, vault secret, or provisioning receipt.
+- Coexistence with a CoCo workload using the same Fortanix account and service instances while keeping separate policy and DSM authorization boundaries.
 
-1. The runtime computes the vault binding from the attached LUKS header.
-2. It verifies that the local TEE field equals the binding before contacting any service.
-3. The runtime verifies the signed receipt and uses its AppConfig ID, certificate SAN, DSM application ID, and DSM object UUID to create ephemeral CoCo configuration under `/run`.
-4. `ccm_as` generates an ephemeral workload key and requests a certificate using the per-vault AppConfig ID.
-5. CCM verifies CPU evidence, approved measurements, the exact vault binding, TCB policy, AppConfig binding, proof-key binding, and required GPU evidence.
-6. `ccm_kbc` presents the certificate to the per-vault DSM application and requests `kbs:///dsm/key/<object-uuid>` from the signed receipt. The public NVFlare identity remains the logical resource path recorded in that receipt.
-7. The runtime accepts exactly 64 bytes, keeps them in protected memory, unlocks the vault, and zeroizes the temporary buffer.
+Unit tests cover provider selection, DSM lifecycle receipts, strict project/profile schemas, authenticated LUKS token parsing, fresh AA/CDH invocation, resource URI selection, secret length/encoding, package isolation, and fail-closed dispatch. Live Fortanix service and hardware evidence must be added to [VALIDATION.md](VALIDATION.md) when the matrix is run.
 
-Changing an AppConfig ID, certificate SAN, DSM object ID, endpoint, or receipt must produce either a local verification failure or a remote authorization denial. It must never select a broader default application.
-
-### 7.4 Renewal and peer proof
-
-The reference `ccm_as` implementation caches a workload certificate until its X.509 expiration. NVFlare currently obtains fresh Trustee appraisal for unlock, recovery, periodic health checks, and optional peer credentials. The prototype avoids relying on that process-global cache: every authorization or renewal starts a private Attestation Agent and CDH subprocess pair with an empty state directory, performs one `get_resource`, validates certificate age, and terminates both processes. A later released CoCo interface may replace this wrapper with an explicit forced-refresh operation.
-
-Production additionally requires one of these service guarantees:
-
-- Configure CCM certificates with a lifetime no longer than NVFlare's maximum appraisal age and refresh them before the existing bounded renewal deadline; or
-- Add an upstream `force_refresh` operation to `ccm_as` and call it for every NVFlare renewal cycle.
-
-The runtime must reject a certificate whose age exceeds the configured NVFlare limit even when its X.509 `notAfter` is later. Starting a fresh process is not a substitute for checking the issued certificate's `notBefore`, `notAfter`, chain, and maximum age.
-
-Rename the application-facing proof file to a provider-neutral `attestation_credentials.json`. A Fortanix entry carries the certificate chain, ephemeral private key, AppConfig ID, vault binding, certificate validity, and signed profile/vault receipt digests. Peers trust the CCM Zone CA and the federation's signed mapping from AppConfig ID to approved profile and vault binding. Trustee entries retain the current EAR and proof key. The application never receives DSM management credentials.
-
-### 7.5 Revocation and cleanup
-
-Revocation disables the DSM runtime application first, then disables the CCM AppConfig, and finally retires or destroys the DSM object according to the project's retention policy. The receipt records each idempotent step. A partially completed revocation is treated as revoked; retry logic may only remove access, never recreate it.
-
-Deleting a vault build that failed before publication follows the same fenced cleanup. Audit records must correlate the CVM bundle ID, vault binding, CCM AppConfig, DSM application, group, object, and NVFlare transaction ID.
-
-## 8. GPU support
-
-The Fortanix attestation revision used by the reference enables `nvidia-evidence` and attempts to include NVIDIA evidence for both SNP and TDX. That is not yet enough for NVFlare production support:
-
-- The referenced code logs failure to collect GPU evidence and continues to CCM. Every GPU-required NVFlare profile must set CCM coprocessor policy to `Required`, and CCM must then deny certificate issuance when the evidence is absent or invalid. A guest-side early failure is desirable but is not the security boundary.
-- CCM policy must validate the same driver RIM, VBIOS RIM, certificate chains, measurements, debug state, device count, and freshness that the current Trustee policy requires.
-- The workload certificate or a signed CCM result must let NVFlare and its peers distinguish a CPU-only appraisal from a successful CPU+GPU composite appraisal.
-- GPU disappearance after unlock remains a terminal quarantine event.
-
-Until Fortanix provides and NVFlare tests those properties, configuration validation rejects `key_release.provider: fortanix_ccm` together with `gpu_tee: nvidia_cc`. CPU-only SNP and TDX are the first supported profiles. GPU support is enabled per platform only after the negative test matrix passes; evidence collection alone does not enable it.
-
-## 9. Package changes
-
-Proposed layout:
-
-```text
-cvm/
-├── key_release/
-│   ├── base.py
-│   ├── contracts.py
-│   ├── trustee/
-│   │   ├── admin.py
-│   │   └── runtime.py
-│   └── fortanix/
-│       ├── admin.py
-│       ├── receipts.py
-│       └── runtime.py
-├── runtime/
-│   ├── attestation.py       # common local binding and provider dispatch
-│   └── bootstrap.py         # common unlock/recovery/quarantine
-└── build/
-    └── config.py            # strict provider schema
-```
-
-`cvm.key_release.fortanix.runtime` should invoke supported CoCo guest components. It must not contain TEE quote parsing, CCM certificate issuance, or a reimplementation of the DSM client. If CoCo exposes an external resource-provider API before `ccm_kbc` is released, prefer that API so NVFlare can consume stock CoCo binaries plus a Fortanix-maintained provider.
-
-## 10. Migration
-
-Changing an existing deployment from Trustee to Fortanix is a rebuild and reseal operation:
-
-1. Create and approve a new generic profile containing the Fortanix runtime, endpoints, and trust roots.
-2. Register the approved measurements and policies in CCM.
-3. Recreate every application vault copy with a new key and vault binding.
-4. Provision its Fortanix AppConfig and DSM authorization.
-5. Test recovery and revocation before switching the deployment.
-6. Retain the old Trustee resources until rollback is no longer required, then revoke them.
-
-Do not copy a raw vault key from Trustee to DSM through an unattended migration command. If preserving an existing encrypted vault is mandatory, require a separately audited key-transfer ceremony on a trusted host and issue a new signed receipt.
-
-The Trustee and Fortanix providers may coexist across different profile versions. One running CVM profile uses one provider; runtime fallback from Fortanix to Trustee is forbidden.
-
-## 11. Implementation phases
-
-### Phase 0: compatibility proof
-
-- Confirm supported CCM and DSM versions, APIs, licensing, certificate lifetime controls, and Node Agent deployment model with Fortanix.
-- Confirm that CCM policy can require the exact SNP `HOST_DATA` or TDX `MRCONFIGID` vault binding and the supplied AppConfig ID.
-- Confirm DSM per-vault isolation through separate groups/applications or an equivalent object-level policy.
-- Confirm how an attested AppConfig identity appears in the CCM-issued certificate and DSM audit log.
-- Track CoCo PRs #1722 and #1727 and select a versioned upstream dependency.
-
-### Phase 1: provider abstraction
-
-- Extract current Trustee build and runtime calls behind `KeyReleaseProvider`.
-- Add strict `key_release.provider` configuration and receipts.
-- Keep behavior and tests unchanged for Trustee.
-
-Implemented in the provider-abstraction change. The measured profile now pins
-`key_release_provider`, `cvm_project.yml` strictly selects one matching
-provider, Trustee publication is behind `KeyReleaseProvider`, management
-credentials require restrictive permissions, and runtime selection has no
-fallback. The Fortanix project schema is accepted and validated, then fails
-before image retrieval or key creation. Phase 2 replaces this gate with two
-explicit capability levels: `preview` accepts only the reviewed source and
-service contract pinned in §13, while `production` accepts only a released CoCo
-dependency and a completed acceptance record. There is no generic override for
-either gate.
-
-### Phase 2: CPU-only Fortanix prototype
-
-- Integrate the exact CoCo `ccm_as` and `ccm_kbc` components.
-- Add CCM profile/AppConfig and DSM lifecycle management.
-- Support CPU-only SNP and TDX vault unlock, recovery, renewal, revocation, and audit correlation.
-
-### Phase 3: peer credentials and operations
-
-- Add provider-neutral application credentials and peer verification.
-- Add forced refresh or bounded certificate lifetimes.
-- Add operational documentation, diagnostics, cleanup, and rotation.
-
-### Phase 4: GPU and non-exportable KEK
-
-- Prove that CCM `Required` coprocessor policy denies issuance when NVIDIA evidence is missing or invalid; add a guest-side early failure when the released client exposes that control.
-- Prove CCM appraisal parity and enable qualified SNP/TDX GPU profiles.
-- Adopt a generic DSM unwrap path after it is supported by CoCo without provider-specific vault formats.
-
-## 12. Test and acceptance matrix
-
-Unit and contract tests:
-
-- Strict parsing and secret-path handling for both providers.
-- Preview accepts only the exact source and lock digests; production rejects every preview dependency.
-- Common provider lifecycle contract and deterministic logical resource identity.
-- Signed receipt verification and rejection of altered AppConfig, SAN, DSM UUID, binding, or policy revision.
-- A receipt from vault A is rejected locally by vault B before any service request.
-- Create/resume/revoke retries are idempotent across every recorded transaction state.
-- Management credentials never enter payload lists, manifests, deliveries, logs, exceptions, or OCI layers.
-- Provider failure cannot trigger fallback.
-
-End-to-end tests against the same Fortanix account and DSM instance used by a CoCo test deployment:
-
-| Case | Required result |
-|---|---|
-| Approved SNP CPU CVM | Unlock, run job, recover, and re-attest |
-| Approved TDX CPU CVM | Unlock, run job, recover, and re-attest |
-| CoCo workload and NVFlare CVM concurrently | Both succeed with separate audit identities and no credential changes |
-| Vault A requests vault B resource | Denied by DSM even if the object UUID is known |
-| Wrong AppConfig or certificate SAN | Denied |
-| Modified SNP `HOST_DATA` or TDX `MRCONFIGID` | CCM denies certificate |
-| Unapproved measurement or unacceptable TCB | CCM denies certificate |
-| Expired, revoked, or over-age certificate | DSM/runtime denies release |
-| Disabled DSM application or revoked object | Release and recovery denied |
-| Node Agent or CCM unavailable | Bounded failure; vault remains locked |
-| DSM unavailable or redirects | Bounded failure; vault remains locked |
-| GPU-required profile with missing GPU evidence | Certificate/release denied |
-| Qualified SNP/TDX plus NVIDIA GPU | CPU and every GPU affirm; job runs; loss causes terminal quarantine |
-
-Production enablement requires successful tests on two physical lab hosts, restart and recovery tests, forced negative tests, audit-log review, and confirmation that no code or configuration is edited between provisioning and the test run.
-
-## 13. Blocker resolution
-
-The recommended solution separates a prototype dependency gate from a
-production gate and makes every per-vault authorization relationship explicit.
-It does not wait for an upstream release before integration work can begin, and
-it does not call an unreleased dependency production-ready.
-
-### 13.1 CoCo dependency
-
-As of 2026-10-21, CoCo PR #1722 is still open. Its current head is
-`b158fac651c9068644aaf14dde7cc46fb43ed159`, and its Cargo lock pins the
-Fortanix attestation library at
-`fade7bf57c93fefaeaca77fe453b87a7909c9cd4`. The CPU prototype may build those
-exact commits after source review and record the repository, commit, Cargo lock
-digest, binary digests, compiler, features, and SBOM in the profile receipt.
-Branch names, PR heads, and unpinned container tags are invalid inputs.
-
-This is a controlled preview capability. It must be selected explicitly, is
-excluded from release claims, and may connect only to configured test accounts.
-The production capability remains disabled until `ccm_as` and `ccm_kbc` are in
-a versioned CoCo release or Fortanix publishes an equivalent supported,
-digest-pinned guest artifact with a compatibility and update commitment. Moving
-from preview to production changes the profile and requires rebuilding and
-re-accepting the generic CVM.
-
-NVFlare uses the CoCo contracts unchanged:
-
-- `aa.toml` selects `ccm_as` and supplies the certificate names and AppConfig ID.
-- `cdh.toml` selects `ccm_kbc` and supplies the DSM endpoint and Trusted-CA application ID.
-- The resource URI passed to CDH is `kbs:///dsm/key/<uuid>`.
-- The local Node Agent connection remains vsock CID 2, port 40 until the upstream client supports another value.
-
-The NVFlare wrapper controls process lifetime and validates receipts; it does
-not parse TEE evidence, issue CCM certificates, implement DSM mTLS, or fork a
-Fortanix protocol.
-
-### 13.2 Exact vault authorization
-
-Create one CCM application/build and one DSM group/runtime application for each
-sealed platform copy. This is the initial, conservative isolation boundary:
-
-1. The CCM build contains the generic bundle measurements and the exact
-   per-vault SNP `HOST_DATA` or padded TDX `MRCONFIGID` already enforced by CVM
-   Builder.
-2. The AppConfig ID and ephemeral certificate public key are bound into the TEE
-   report data by `ccm_as`.
-3. The CCM application permits one vault-specific certificate SAN.
-4. The DSM Trusted-CA application trusts the shared CCM Zone CA, requires that
-   exact SAN, and belongs to one vault-specific group.
-5. The group contains the single 64-byte vault secret. The runtime application
-   has `EXPORT` only and cannot manage objects or access another group.
-6. The signed receipt binds all of those identifiers to the local LUKS-derived
-   vault binding.
-
-This layout intentionally creates more service objects. Labels containing the
-NVFlare transaction ID, bundle ID, platform, and vault binding make them
-searchable and allow deterministic cleanup. A later optimization may combine
-groups only after an automated negative test proves that certificate A cannot
-export object B. Object count is an operational concern; it must not weaken the
-authorization boundary.
-
-### 13.3 Receipt authority and transport
-
-Create one non-exportable ECDSA P-256 receipt-signing key per NVFlare project in
-DSM. Only the Stage 2 provisioning application receives `SIGN`; runtime
-applications receive no permission on this key. Stage 1 fetches and measures
-the public key. Stage 2 signs canonical JSON with domain separation
-`NVFLARE-CVM-FORTANIX-RECEIPT-V1`.
-
-The launcher provides the signed receipt as the read-only QEMU `fw_cfg` file
-`opt/nvflare/key-release`. The guest verifies the signature and all local fields
-before it renders CoCo configuration under `/run`. A copied receipt fails the
-local vault-binding comparison. A modified receipt fails signature validation.
-Changing only a DSM ID fails the exact SAN/group authorization, and changing
-the AppConfig or CCM application fails attestation against the vault-specific
-build.
-
-### 13.4 Management automation
-
-Use generated clients from Fortanix's published CCM and DSM OpenAPI
-specifications behind small `CcmAdminClient` and `DsmAdminClient` adapters. Pin
-the accepted API versions and schema digests in the source and test them against
-the configured servers before generating a secret. Required operations are:
-
-- CCM application, build, AppConfig, approval-status, disable, and audit lookup.
-- DSM group and Trusted-CA application create/update/disable.
-- DSM secret import/readback/activate/deactivate/destroy.
-- DSM receipt-key public-key retrieval and signing.
-
-The clients accept credentials only through restrictive files or inherited file
-descriptors and redact request headers and bodies. A server with an unsupported
-API contract fails before LUKS formatting. Creation is a resumable transaction
-so human CCM approval does not require retaining plaintext key material or
-granting the builder approval authority.
-
-### 13.5 Freshness, GPU, and non-exportable KEK
-
-For the CPU prototype, a fresh Attestation Agent/CDH process pair is used for
-each unlock, recovery, and renewal. The runtime also enforces the configured
-certificate maximum age. Production may keep this model or adopt an upstream
-forced-refresh operation.
-
-Fortanix now documents `Required` GPU coprocessor policy for both SNP and TDX:
-CCM uses NRAS to validate the evidence and denies a certificate when required
-evidence is missing. GPU support remains disabled until the negative matrix
-proves this behavior and the signed profile/receipt lets peers distinguish the
-GPU-required policy. The client logging a missing GPU and continuing to CCM is
-acceptable only when CCM then denies issuance; a CPU-only certificate must
-never satisfy a GPU profile.
-
-The initial vault flow uses the generic DSM object export already implemented
-by `ccm_kbc`. PR #1727's non-exportable KEK protocol is useful for encrypted OCI
-layers but is not required for the 64-byte LUKS secret prototype. Adopt it later
-only through a provider-neutral CoCo operation.
-
-### 13.6 Exit criteria
-
-The CPU-only prototype can start when the preview commits pass source review,
-the configured CCM/DSM server versions pass API capability checks, and the
-project has a receipt-signing key. Production support additionally requires:
-
-1. A released or vendor-supported digest-pinned `ccm_as`/`ccm_kbc` dependency.
-2. Passing SNP and TDX positive and cross-vault negative tests on physical hosts.
-3. Recovery, renewal, revocation, partial-transaction cleanup, and audit correlation tests.
-4. Confirmation that CoCo and NVFlare share the same CCM, DSM, Zone CA, and Node Agents without sharing runtime authorization.
-5. A signed acceptance record for the exact profile and service contract.
-
-GPU support and a non-exportable KEK remain separate capabilities. Their absence
-does not block the CPU-only provider, and neither can be inferred from successful
-CPU testing.
-
-## 14. References
+## 9. References
 
 - [Fortanix guest-components commit `a77b529`](https://github.com/fortanix/guest-components/commit/a77b52902554946c3cd77166483915c915465895)
-- [CoCo `ccm_as` and `ccm_kbc` PR #1722](https://github.com/confidential-containers/guest-components/pull/1722)
-- [CoCo DSM non-exportable KEK PR #1727](https://github.com/confidential-containers/guest-components/pull/1727)
-- [CoCo Fortanix KBC RFC #1513](https://github.com/confidential-containers/guest-components/issues/1513)
-- [Fortanix DSM certificate and Trusted CA authentication](https://support.fortanix.com/v1/docs/dsm-authentication)
+- [Fortanix DSM authentication](https://support.fortanix.com/v1/docs/dsm-authentication)
 - [Fortanix CoCo deployment on AMD SEV-SNP](https://support.fortanix.com/docs/deploy-confidential-container-coco-workloads-on-amd-sev-snp-platform)
 - [Fortanix CoCo deployment on Intel TDX](https://support.fortanix.com/docs/deploy-confidential-container-coco-workloads-on-intel-tdx-platform)
-- [Fortanix CCM OpenAPI](https://support.fortanix.com/apidocs/ccm-introduction)
-- [Fortanix DSM OpenAPI](https://support.fortanix.com/apidocs)
-- [CoCo architecture](https://github.com/confidential-containers/confidential-containers/blob/main/architecture.md)
+- [Fortanix DSM API](https://support.fortanix.com/apidocs)

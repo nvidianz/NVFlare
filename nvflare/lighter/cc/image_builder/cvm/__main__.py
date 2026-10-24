@@ -34,6 +34,7 @@ from .common.io import read_json, write_json
 from .common.linux import enable_diagnostics
 from .host.platforms import host_capabilities
 from .host.preflight import check_host
+from .key_release.fortanix.provenance import provenance as fortanix_provenance
 from .trustee import admin
 from .trustee.bootstrap import create_deployment_receipt, issue_admin_token
 from .trustee.client import delete_resource, resource_role_acl
@@ -469,6 +470,19 @@ def parser():
     record.add_argument("binary", type=Path, help="kbs or kbs-client executable built from that checkout")
     record.add_argument("output", type=Path)
     record.set_defaults(handler=lambda a: write_json(a.output, provenance(a.source, a.binary)))
+    fortanix_record = commands.add_parser(
+        "fortanix-provenance", help="record reviewed Fortanix Attestation Agent and CDH binaries"
+    )
+    fortanix_record.add_argument("source", type=Path)
+    fortanix_record.add_argument("attestation_agent", type=Path)
+    fortanix_record.add_argument("cdh_oneshot", type=Path)
+    fortanix_record.add_argument("output", type=Path)
+    fortanix_record.set_defaults(
+        handler=lambda a: write_json(
+            a.output,
+            fortanix_provenance(a.source, a.attestation_agent, a.cdh_oneshot),
+        )
+    )
     inspect = commands.add_parser("inspect-tcb", help="inspect candidate TDX TCB fields without approving them")
     inspect.add_argument("evidence", type=Path)
     inspect.set_defaults(handler=lambda a: print(json.dumps(inspect_tcb(read_json(a.evidence)), indent=2)))

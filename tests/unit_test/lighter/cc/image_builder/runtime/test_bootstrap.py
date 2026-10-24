@@ -222,7 +222,7 @@ class BootstrapTests(unittest.TestCase):
                 patch.object(bootstrap, "binding", return_value=bytes(32)),
                 patch.object(bootstrap, "verify_local_binding"),
                 patch.object(bootstrap, "memory_file", side_effect=lambda *a, **k: contextlib.nullcontext(11)),
-                patch.object(bootstrap, "inspect_header"),
+                patch.object(bootstrap, "inspect_header", return_value={"tokens": {}}),
                 patch.object(bootstrap, "authorized_key", side_effect=lambda *a: contextlib.nullcontext(12)),
                 patch.object(bootstrap, "validate_mapping"),
                 patch.object(bootstrap, "scan", side_effect=lambda *a: events.append("scan")),
@@ -269,7 +269,7 @@ class BootstrapTests(unittest.TestCase):
                 patch.object(
                     bootstrap,
                     "open_vault",
-                    return_value=(bytes([1]) * 32 if changed else bytes(32), "uuid"),
+                    return_value=(bytes([1]) * 32 if changed else bytes(32), "uuid", None),
                 ),
                 patch.object(bootstrap, "verify_payload", side_effect=lambda *a: events.append("verify")),
                 patch.object(bootstrap, "mount_roles", side_effect=lambda *a: events.append("mount")),
@@ -322,7 +322,7 @@ class BootstrapTests(unittest.TestCase):
             def opened(*args):
                 self.assertFalse(active[0], "previous attempt left its mapping active")
                 active[0] = True
-                return bytes(32), "uuid"
+                return bytes(32), "uuid", None
 
             with self.subTest(stage=failed), contextlib.ExitStack() as stack:
                 for name in (
@@ -558,7 +558,7 @@ class BootstrapTests(unittest.TestCase):
                     side_effect=BuildError("wrong binding") if wrong_binding else None,
                 ),
                 patch.object(bootstrap, "memory_file", side_effect=lambda *a, **k: contextlib.nullcontext(11)),
-                patch.object(bootstrap, "inspect_header"),
+                patch.object(bootstrap, "inspect_header", return_value={"tokens": {}}),
                 patch.object(
                     bootstrap, "authorized_key", side_effect=lambda *a: contextlib.nullcontext(12)
                 ) as authorize,
